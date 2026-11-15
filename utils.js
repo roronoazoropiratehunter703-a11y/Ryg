@@ -50,7 +50,7 @@ async function getSolBalance(publicKeyString) {
     }
 }
 
-// NEW: Withdraw function for users to send SOL to their own external addresses
+// Withdraw function for users to send SOL to their own external addresses
 async function withdrawSol(userKeypair, recipientAddress, amountInSol) {
     try {
         const recipientPubKey = new PublicKey(recipientAddress);
