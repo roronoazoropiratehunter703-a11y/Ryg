@@ -1,9 +1,8 @@
-
 // index.js
 const { 
     Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, 
     ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, 
-    TextInputStyle, PermissionFlagsBits, ChannelType 
+    TextInputStyle, PermissionFlagsBits, ChannelType, REST, Routes, SlashCommandBuilder 
 } = require('discord.js');
 require('dotenv').config();
 const { getUserWallet, getSolBalance, withdrawSol, connection } = require('./utils');
@@ -17,8 +16,28 @@ const client = new Client({
     ]
 });
 
-client.once('ready', () => {
+client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
+
+    // Automatically register the /panel slash command on startup
+    const commands = [
+        new SlashCommandBuilder()
+            .setName('panel')
+            .setDescription('Deploys the Solana deposit and investment panel (Admin only)')
+    ];
+
+    const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+
+    try {
+        console.log('Started refreshing application (/) commands for your server.');
+        await rest.put(
+            Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+            { body: commands },
+        );
+        console.log('Successfully reloaded application (/) commands!');
+    } catch (error) {
+        console.error('Error registering slash commands:', error);
+    }
 });
 
 client.on('interactionCreate', async interaction => {
@@ -44,7 +63,7 @@ client.on('interactionCreate', async interaction => {
         return interaction.channel.send({ embeds: [embed], components: [row] });
     }
 
-    // 2. Button: View Unique Panel & Balance (UPDATED with Withdraw Button added to row)
+    // 2. Button: View Unique Panel & Balance
     if (interaction.isButton() && interaction.customId === 'view_panel') {
         await interaction.deferReply({ ephemeral: true });
         const userWallet = await getUserWallet(interaction.user.id);
@@ -62,7 +81,7 @@ client.on('interactionCreate', async interaction => {
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('refresh_balance').setLabel('Refresh').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId('invest_modal').setLabel('Invest').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('withdraw_modal').setLabel('Withdraw').setStyle(ButtonStyle.Danger) // NEW BUTTON
+            new ButtonBuilder().setCustomId('withdraw_modal').setLabel('Withdraw').setStyle(ButtonStyle.Danger)
         );
 
         return interaction.editReply({ embeds: [embed], components: [row] });
@@ -140,7 +159,7 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // --- NEW CODE: 6. Button: Open Withdraw Modal ---
+    // 6. Button: Open Withdraw Modal
     if (interaction.isButton() && interaction.customId === 'withdraw_modal') {
         const modal = new ModalBuilder()
             .setCustomId('withdraw_modal_submit')
@@ -167,7 +186,7 @@ client.on('interactionCreate', async interaction => {
         return interaction.showModal(modal);
     }
 
-    // --- NEW CODE: 7. Modal Submit: Process User Withdrawal ---
+    // 7. Modal Submit: Process User Withdrawal
     if (interaction.isModalSubmit() && interaction.customId === 'withdraw_modal_submit') {
         await interaction.deferReply({ ephemeral: true });
         const recipientAddress = interaction.fields.getTextInputValue('withdraw_address');
