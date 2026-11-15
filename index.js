@@ -15,8 +15,8 @@ const db = createClient({
     authToken: process.env.TURSO_AUTH_TOKEN,
 });
 
-// Configure your role IDs here (Replace with your actual Discord Role IDs)
-const OWNER_ROLE_ID = 'YOUR_OWNER_ROLE_ID_HERE'; // The ID for your "ownerz" role
+// Configured ownerz role ID
+const OWNER_ROLE_ID = '1571451596871696496';
 
 const client = new Client({
     intents: [
