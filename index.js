@@ -19,58 +19,155 @@ const client = new Client({
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
-    // Automatically register the /panel slash command on startup
     const commands = [
         new SlashCommandBuilder()
-            .setName('panel')
-            .setDescription('Deploys the Solana deposit and investment panel (Admin only)')
+            .setName('walletpanel')
+            .setDescription('Deploys the Solana wallet & investment panel (Admin only)'),
+        new SlashCommandBuilder()
+            .setName('ticketpanel')
+            .setDescription('Deploys the support ticket panel (Admin only)'),
+        new SlashCommandBuilder()
+            .setName('ban')
+            .setDescription('Ban a user from the server')
+            .addUserOption(option => option.setName('target').setDescription('The user to ban').setRequired(true))
+            .addStringOption(option => option.setName('reason').setDescription('Reason for ban')),
+        new SlashCommandBuilder()
+            .setName('kick')
+            .setDescription('Kick a user from the server')
+            .addUserOption(option => option.setName('target').setDescription('The user to kick').setRequired(true))
+            .addStringOption(option => option.setName('reason').setDescription('Reason for kick')),
+        new SlashCommandBuilder()
+            .setName('mute')
+            .setDescription('Timeout (mute) a user')
+            .addUserOption(option => option.setName('target').setDescription('The user to mute').setRequired(true))
+            .addIntegerOption(option => option.setName('minutes').setDescription('Duration in minutes').setRequired(true))
+            .addStringOption(option => option.setName('reason').setDescription('Reason for mute')),
+        new SlashCommandBuilder()
+            .setName('unmute')
+            .setDescription('Remove timeout from a user')
+            .addUserOption(option => option.setName('target').setDescription('The user to unmute').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('unban')
+            .setDescription('Unban a user by their User ID')
+            .addStringOption(option => option.setName('userid').setDescription('The User ID to unban').setRequired(true))
     ];
 
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 
     try {
-        console.log('Started refreshing application (/) commands for your server.');
+        console.log('Registering application slash commands...');
         await rest.put(
             Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
             { body: commands },
         );
-        console.log('Successfully reloaded application (/) commands!');
+        console.log('Successfully registered all commands!');
     } catch (error) {
         console.error('Error registering slash commands:', error);
     }
 });
 
 client.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isModalSubmit()) return;
+    // Handle Slash Commands
+    if (interaction.isChatInputCommand()) {
+        const { commandName, options, member, guild } = interaction;
 
-    // 1. /panel command (Admin Only)
-    if (interaction.isChatInputCommand() && interaction.commandName === 'panel') {
-        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-            return interaction.reply({ content: 'You need Administrator permissions to use this.', ephemeral: true });
+        // 1. /walletpanel command
+        if (commandName === 'walletpanel') {
+            if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: 'You need Administrator permissions to use this.', ephemeral: true });
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle(':Sol: Solana Wallet & Investment Panel')
+                .setDescription('Click below to view your unique deposit address, check your balance, invest, or withdraw funds.')
+                .setColor(0x9945FF);
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('view_panel').setLabel('My Wallet Panel').setStyle(ButtonStyle.Primary)
+            );
+
+            await interaction.reply({ content: 'Wallet panel deployed!', ephemeral: true });
+            return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
-        const embed = new EmbedBuilder()
-            .setTitle('💎 Solana Investment & Deposit Panel')
-            .setDescription('Click below to view your unique deposit address, check your balance, invest, withdraw, or open a support ticket.')
-            .setColor(0x9945FF);
+        // 2. /ticketpanel command
+        if (commandName === 'ticketpanel') {
+            if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: 'You need Administrator permissions to use this.', ephemeral: true });
+            }
 
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('view_panel').setLabel('My Deposit Panel').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Ticket').setStyle(ButtonStyle.Secondary)
-        );
+            const embed = new EmbedBuilder()
+                .setTitle(':Sol: Support Ticket Panel')
+                .setDescription('Click the button below to open a private support ticket channel.')
+                .setColor(0x3498DB);
 
-        await interaction.reply({ content: 'Panel deployed successfully!', ephemeral: true });
-        return interaction.channel.send({ embeds: [embed], components: [row] });
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Ticket').setStyle(ButtonStyle.Secondary)
+            );
+
+            await interaction.reply({ content: 'Ticket panel deployed!', ephemeral: true });
+            return interaction.channel.send({ embeds: [embed], components: [row] });
+        }
+
+        // --- Moderation Commands ---
+        if (!member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+            return interaction.reply({ content: 'You do not have permission to use moderation commands.', ephemeral: true });
+        }
+
+        if (commandName === 'ban') {
+            const target = options.getMember('target');
+            const reason = options.getString('reason') || 'No reason provided';
+            if (!target) return interaction.reply({ content: 'User not found.', ephemeral: true });
+            await target.ban({ reason });
+            return interaction.reply({ content: `Successfully banned ${target.user.tag}. Reason: ${reason}` });
+        }
+
+        if (commandName === 'kick') {
+            const target = options.getMember('target');
+            const reason = options.getString('reason') || 'No reason provided';
+            if (!target) return interaction.reply({ content: 'User not found.', ephemeral: true });
+            await target.kick(reason);
+            return interaction.reply({ content: `Successfully kicked ${target.user.tag}. Reason: ${reason}` });
+        }
+
+        if (commandName === 'mute') {
+            const target = options.getMember('target');
+            const minutes = options.getInteger('minutes');
+            const reason = options.getString('reason') || 'No reason provided';
+            if (!target) return interaction.reply({ content: 'User not found.', ephemeral: true });
+            await target.timeout(minutes * 60 * 1000, reason);
+            return interaction.reply({ content: `Successfully muted ${target.user.tag} for ${minutes} minutes.` });
+        }
+
+        if (commandName === 'unmute') {
+            const target = options.getMember('target');
+            if (!target) return interaction.reply({ content: 'User not found.', ephemeral: true });
+            await target.timeout(null);
+            return interaction.reply({ content: `Successfully unmuted ${target.user.tag}.` });
+        }
+
+        if (commandName === 'unban') {
+            const userId = options.getString('userid');
+            try {
+                await guild.members.unban(userId);
+                return interaction.reply({ content: `Successfully unbanned user ID: ${userId}` });
+            } catch (error) {
+                return interaction.reply({ content: `Failed to unban. Check if the User ID is valid.`, ephemeral: true });
+            }
+        }
     }
 
-    // 2. Button: View Unique Panel & Balance
+    // Handle Buttons & Modals
+    if (!interaction.isButton() && !interaction.isModalSubmit()) return;
+
+    // 3. Button: View Unique Wallet Panel & Balance ("My Wallet Panel")
     if (interaction.isButton() && interaction.customId === 'view_panel') {
         await interaction.deferReply({ ephemeral: true });
         const userWallet = await getUserWallet(interaction.user.id);
         const balance = await getSolBalance(userWallet.publicKey.toBase58());
 
         const embed = new EmbedBuilder()
-            .setTitle('Your Personal Deposit Vault')
+            .setTitle(':Sol: Your Personal Deposit Vault')
             .addFields(
                 { name: 'Deposit Address (Solana)', value: `\`${userWallet.publicKey.toBase58()}\`` },
                 { name: 'Current Balance', value: `${balance} SOL` }
@@ -87,14 +184,14 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply({ embeds: [embed], components: [row] });
     }
 
-    // 3. Button: Refresh Balance Check
+    // 4. Button: Refresh Balance Check
     if (interaction.isButton() && interaction.customId === 'refresh_balance') {
         await interaction.deferUpdate();
         const userWallet = await getUserWallet(interaction.user.id);
         const balance = await getSolBalance(userWallet.publicKey.toBase58());
 
         const embed = new EmbedBuilder()
-            .setTitle('Your Personal Deposit Vault')
+            .setTitle(':Sol: Your Personal Deposit Vault')
             .addFields(
                 { name: 'Deposit Address (Solana)', value: `\`${userWallet.publicKey.toBase58()}\`` },
                 { name: 'Current Balance', value: `${balance} SOL` }
@@ -104,7 +201,7 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply({ embeds: [embed] });
     }
 
-    // 4. Button: Open Investment Modal
+    // 5. Button: Open Investment Modal
     if (interaction.isButton() && interaction.customId === 'invest_modal') {
         const modal = new ModalBuilder()
             .setCustomId('investment_modal_submit')
@@ -121,7 +218,7 @@ client.on('interactionCreate', async interaction => {
         return interaction.showModal(modal);
     }
 
-    // 5. Modal Submit: Forward SOL from User Wallet to Main Owner Wallet
+    // 6. Modal Submit: Forward SOL from User Wallet to Main Owner Wallet
     if (interaction.isModalSubmit() && interaction.customId === 'investment_modal_submit') {
         await interaction.deferReply({ ephemeral: true });
         const amountStr = interaction.fields.getTextInputValue('invest_amount');
@@ -159,7 +256,7 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // 6. Button: Open Withdraw Modal
+    // 7. Button: Open Withdraw Modal
     if (interaction.isButton() && interaction.customId === 'withdraw_modal') {
         const modal = new ModalBuilder()
             .setCustomId('withdraw_modal_submit')
@@ -186,7 +283,7 @@ client.on('interactionCreate', async interaction => {
         return interaction.showModal(modal);
     }
 
-    // 7. Modal Submit: Process User Withdrawal
+    // 8. Modal Submit: Process User Withdrawal
     if (interaction.isModalSubmit() && interaction.customId === 'withdraw_modal_submit') {
         await interaction.deferReply({ ephemeral: true });
         const recipientAddress = interaction.fields.getTextInputValue('withdraw_address');
@@ -210,7 +307,7 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // 8. Ticket Tool: Create Private Channel
+    // 9. Ticket Tool: Create Private Channel
     if (interaction.isButton() && interaction.customId === 'create_ticket') {
         const guild = interaction.guild;
         const ticketChannel = await guild.channels.create({
@@ -240,8 +337,8 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: `Ticket created: ${ticketChannel}`, ephemeral: true });
     }
 
-    // 9. Ticket Tool: Close Channel
-    if (interaction.isButton() && interaction.customId === 'close_ticket') {
+    // 10. Ticket Tool: Close Channel
+    if (json => interaction.isButton() && interaction.customId === 'close_ticket') {
         await interaction.reply({ content: 'Closing ticket in 5 seconds...' });
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
     }
