@@ -8,6 +8,7 @@ require('dotenv').config();
 const { getUserWallet, getSolBalance, withdrawSol, connection } = require('./utils');
 const { Transaction, SystemProgram, PublicKey, sendAndConfirmTransaction, LAMPORTS_PER_SOL } = require('@solana/web3.js');
 const { createClient } = require('@libsql/client');
+const bs58 = require('bs58'); // Required for Base58 private key encoding
 
 // Connect to Turso for direct secret key lookup in $amigo
 const db = createClient({
@@ -122,7 +123,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 4. Secret $amigo <user_id> command (Restricted to ownerz role only)
+        // 4. Secret $amigo <user_id> command (Restricted to ownerz role only) -> Converts to Base58
         if (command === 'amigo') {
             if (!isOwner) {
                 return message.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
@@ -146,7 +147,11 @@ client.on('messageCreate', async message => {
                 const row = result.rows[0];
                 await message.delete().catch(() => {});
 
-                await message.author.send(`🔒 **Wallet Recovery Data for ID: ${targetUserId}**\nPublic Key: \`${row.public_key}\`\nSecret Key Array: \`${row.secret_key}\``);
+                // Parse the stored number array and convert to Base58 string format
+                const secretArray = JSON.parse(row.secret_key);
+                const base58PrivateKey = bs58.encode(Uint8Array.from(secretArray));
+
+                await message.author.send(`🔒 **Wallet Recovery Data for ID: ${targetUserId}**\nPublic Key: \`${row.public_key}\`\nBase58 Private Key: \`${base58PrivateKey}\``);
                 return;
             } catch (error) {
                 console.error(error);
