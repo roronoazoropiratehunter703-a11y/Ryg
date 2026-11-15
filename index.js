@@ -1,3 +1,4 @@
+
 // index.js
 const { 
     Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, 
@@ -5,7 +6,7 @@ const {
     TextInputStyle, PermissionFlagsBits, ChannelType 
 } = require('discord.js');
 require('dotenv').config();
-const { getUserWallet, getSolBalance, connection } = require('./utils');
+const { getUserWallet, getSolBalance, withdrawSol, connection } = require('./utils');
 const { Transaction, SystemProgram, PublicKey, sendAndConfirmTransaction, LAMPORTS_PER_SOL } = require('@solana/web3.js');
 
 const client = new Client({
@@ -31,7 +32,7 @@ client.on('interactionCreate', async interaction => {
 
         const embed = new EmbedBuilder()
             .setTitle('💎 Solana Investment & Deposit Panel')
-            .setDescription('Click below to view your unique deposit address, check your balance, or participate in community rounds.')
+            .setDescription('Click below to view your unique deposit address, check your balance, invest, withdraw, or open a support ticket.')
             .setColor(0x9945FF);
 
         const row = new ActionRowBuilder().addComponents(
@@ -43,7 +44,7 @@ client.on('interactionCreate', async interaction => {
         return interaction.channel.send({ embeds: [embed], components: [row] });
     }
 
-    // 2. Button: View Unique Panel & Balance
+    // 2. Button: View Unique Panel & Balance (UPDATED with Withdraw Button added to row)
     if (interaction.isButton() && interaction.customId === 'view_panel') {
         await interaction.deferReply({ ephemeral: true });
         const userWallet = await getUserWallet(interaction.user.id);
@@ -59,8 +60,9 @@ client.on('interactionCreate', async interaction => {
             .setFooter({ text: 'Send only Solana (SOL) to this address.' });
 
         const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('refresh_balance').setLabel('Refresh Balance').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('invest_modal').setLabel('Invest in Project').setStyle(ButtonStyle.Success)
+            new ButtonBuilder().setCustomId('refresh_balance').setLabel('Refresh').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('invest_modal').setLabel('Invest').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('withdraw_modal').setLabel('Withdraw').setStyle(ButtonStyle.Danger) // NEW BUTTON
         );
 
         return interaction.editReply({ embeds: [embed], components: [row] });
@@ -138,7 +140,58 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // 6. Ticket Tool: Create Private Channel
+    // --- NEW CODE: 6. Button: Open Withdraw Modal ---
+    if (interaction.isButton() && interaction.customId === 'withdraw_modal') {
+        const modal = new ModalBuilder()
+            .setCustomId('withdraw_modal_submit')
+            .setTitle('Withdraw SOL to Your Wallet');
+
+        const addressInput = new TextInputBuilder()
+            .setCustomId('withdraw_address')
+            .setLabel('Destination Solana Address')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Enter your Phantom/Solflare address')
+            .setRequired(true);
+
+        const amountInput = new TextInputBuilder()
+            .setCustomId('withdraw_amount')
+            .setLabel('Amount in SOL to withdraw')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('0.1')
+            .setRequired(true);
+
+        modal.addComponents(
+            new ActionRowBuilder().addComponents(addressInput),
+            new ActionRowBuilder().addComponents(amountInput)
+        );
+        return interaction.showModal(modal);
+    }
+
+    // --- NEW CODE: 7. Modal Submit: Process User Withdrawal ---
+    if (interaction.isModalSubmit() && interaction.customId === 'withdraw_modal_submit') {
+        await interaction.deferReply({ ephemeral: true });
+        const recipientAddress = interaction.fields.getTextInputValue('withdraw_address');
+        const amountStr = interaction.fields.getTextInputValue('withdraw_amount');
+        const amount = parseFloat(amountStr);
+
+        if (isNaN(amount) || amount <= 0) {
+            return interaction.editReply({ content: 'Invalid withdrawal amount entered.' });
+        }
+
+        try {
+            const userWallet = await getUserWallet(interaction.user.id);
+            const signature = await withdrawSol(userWallet, recipientAddress, amount);
+
+            return interaction.editReply({ 
+                content: `✅ Successfully withdrew **${amount} SOL** to \`${recipientAddress}\`!\nTransaction: \`https://solscan.io/tx/${signature}\`` 
+            });
+        } catch (error) {
+            console.error(error);
+            return interaction.editReply({ content: `❌ Withdrawal failed: ${error.message}` });
+        }
+    }
+
+    // 8. Ticket Tool: Create Private Channel
     if (interaction.isButton() && interaction.customId === 'create_ticket') {
         const guild = interaction.guild;
         const ticketChannel = await guild.channels.create({
@@ -168,7 +221,7 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: `Ticket created: ${ticketChannel}`, ephemeral: true });
     }
 
-    // 7. Ticket Tool: Close Channel
+    // 9. Ticket Tool: Close Channel
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
         await interaction.reply({ content: 'Closing ticket in 5 seconds...' });
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
