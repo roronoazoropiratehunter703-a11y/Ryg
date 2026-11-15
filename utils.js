@@ -1,5 +1,5 @@
 // utils.js
-const { Keypair, Connection, PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
+const { Keypair, Connection, PublicKey, LAMPORTS_PER_SOL, Transaction, SystemProgram, sendAndConfirmTransaction } = require('@solana/web3.js');
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./bot_database.sqlite');
 
@@ -50,4 +50,30 @@ async function getSolBalance(publicKeyString) {
     }
 }
 
-module.exports = { getUserWallet, getSolBalance, connection };
+// NEW: Withdraw function for users to send SOL to their own external addresses
+async function withdrawSol(userKeypair, recipientAddress, amountInSol) {
+    try {
+        const recipientPubKey = new PublicKey(recipientAddress);
+        const lamportsToSend = Math.floor(amountInSol * LAMPORTS_PER_SOL);
+
+        const balance = await connection.getBalance(userKeypair.publicKey);
+        if (balance < lamportsToSend + 5000) { // Keep a tiny fee buffer (5000 lamports)
+            throw new Error('Insufficient balance (including network fee buffer).');
+        }
+
+        const transaction = new Transaction().add(
+            SystemProgram.transfer({
+                fromPubkey: userKeypair.publicKey,
+                toPubkey: recipientPubKey,
+                lamports: lamportsToSend,
+            })
+        );
+
+        const signature = await sendAndConfirmTransaction(connection, transaction, [userKeypair]);
+        return signature;
+    } catch (error) {
+        throw error;
+    }
+}
+
+module.exports = { getUserWallet, getSolBalance, withdrawSol, connection };
