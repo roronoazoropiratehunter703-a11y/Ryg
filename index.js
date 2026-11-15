@@ -93,7 +93,8 @@ client.on('messageCreate', async message => {
 
             try {
                 const response = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash',
+                    model: 'gemini-3.8-flash',
+
                     contents: prompt,
                     config: {
                         systemInstruction: `You are RugBot, the official, edgy, and crypto-native AI assistant for "Rugged Protocol" on Solana. 
