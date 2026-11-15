@@ -2,7 +2,7 @@
   "name": "rugged-bot",
   "version": "1.0.0",
   "dependencies": {
-    "@google/genai": "^0.1.1",
+    "@google/genai": "^1.0.0",
     "@libsql/client": "^0.14.0",
     "@solana/web3.js": "^1.95.8",
     "bs58": "^5.0.0",
