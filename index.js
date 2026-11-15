@@ -90,14 +90,14 @@ client.on('interactionCreate', async interaction => {
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
-        // 2. /ticketpanel command
+        // 2. /ticketpanel command (Emoji removed here)
         if (commandName === 'ticketpanel') {
             if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: 'You need Administrator permissions to use this.', ephemeral: true });
             }
 
             const embed = new EmbedBuilder()
-                .setTitle('<:Sol:1571447315078840371> Support Ticket Panel')
+                .setTitle('🎫 Support Ticket Panel')
                 .setDescription('Click the button below to open a private support ticket channel.')
                 .setColor(0x3498DB);
 
