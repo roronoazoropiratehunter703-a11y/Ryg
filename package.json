@@ -1,7 +1,7 @@
 {
   "name": "solana-discord-bot",
   "version": "1.0.0",
-  "description": "Discord bot with unique Solana deposit addresses and investment panels",
+  "description": "Discord bot with unique Solana deposit addresses, investment panels, and withdrawals",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
