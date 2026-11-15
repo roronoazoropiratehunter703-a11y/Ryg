@@ -234,15 +234,16 @@ client.on('interactionCreate', async interaction => {
             }
 
             const embed = new EmbedBuilder()
-                .setTitle('<:Sol:1571447315078840371> Solana Wallet & Investment Panel')
-                .setDescription('Click below to view your unique deposit address, check your balance, invest, or withdraw funds.')
-                .setColor(0x9945FF);
+                .setTitle('<:Sol:1571447315078840371> Rugged Protocol — Treasury & Investment Terminal')
+                .setDescription('Access your secure personal vault below to check balances, fund upcoming token launches, or withdraw funds.')
+                .setColor(0x9945FF)
+                .setFooter({ text: 'Rugged Security Ecosystem' });
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('view_panel').setLabel('My Wallet Panel').setStyle(ButtonStyle.Primary)
+                new ButtonBuilder().setCustomId('view_panel').setLabel('💳 Open My Wallet Panel').setStyle(ButtonStyle.Primary)
             );
 
-            await interaction.reply({ content: 'Wallet panel deployed!', ephemeral: true });
+            await interaction.reply({ content: 'Wallet panel deployed successfully!', ephemeral: true });
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
@@ -253,15 +254,15 @@ client.on('interactionCreate', async interaction => {
             }
 
             const embed = new EmbedBuilder()
-                .setTitle('🎫 Support Ticket Panel')
-                .setDescription('Click the button below to open a private support ticket channel.')
+                .setTitle('🎫 Rugged Support & Assistance')
+                .setDescription('Need help or have inquiries? Click the button below to open a private support ticket.')
                 .setColor(0x3498DB);
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Ticket').setStyle(ButtonStyle.Secondary)
+                new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Support Ticket').setStyle(ButtonStyle.Secondary)
             );
 
-            await interaction.reply({ content: 'Ticket panel deployed!', ephemeral: true });
+            await interaction.reply({ content: 'Ticket panel deployed successfully!', ephemeral: true });
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
@@ -307,11 +308,11 @@ client.on('interactionCreate', async interaction => {
                 { name: 'Current Balance', value: `${balance} SOL` }
             )
             .setColor(0x14F195)
-            .setFooter({ text: 'Send only Solana (SOL) to this address.' });
+            .setFooter({ text: 'Send only Solana (SOL) to this secure deposit address.' });
 
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('refresh_balance').setLabel('Refresh').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('invest_modal').setLabel('Invest').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('invest_modal').setLabel('Invest in Rugpull').setStyle(ButtonStyle.Success),
             new ButtonBuilder().setCustomId('withdraw_modal').setLabel('Withdraw').setStyle(ButtonStyle.Danger)
         );
 
@@ -335,11 +336,11 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply({ embeds: [embed] });
     }
 
-    // 5. Button: Open Investment Modal
+    // 5. Button: Open Investment Modal ("Invest in Upcoming Rugpull")
     if (interaction.isButton() && interaction.customId === 'invest_modal') {
         const modal = new ModalBuilder()
             .setCustomId('investment_modal_submit')
-            .setTitle('Invest in Community Round');
+            .setTitle('Invest in Upcoming Rugpull');
 
         const amountInput = new TextInputBuilder()
             .setCustomId('invest_amount')
@@ -382,7 +383,7 @@ client.on('interactionCreate', async interaction => {
             const signature = await sendAndConfirmTransaction(connection, transaction, [userWallet]);
 
             return interaction.editReply({ 
-                content: `Success! Invested **${amount} SOL**. \nTransaction Signature: \`https://solscan.io/tx/${signature}\`` 
+                content: `🚀 Successfully invested **${amount} SOL** into the upcoming rugpull launch!\nTransaction Signature: \`https://solscan.io/tx/${signature}\`` 
             });
         } catch (error) {
             console.error(error);
