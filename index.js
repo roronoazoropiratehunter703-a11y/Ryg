@@ -23,7 +23,8 @@ const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMessageReactions
     ]
 });
 
@@ -87,13 +88,13 @@ client.on('messageCreate', async message => {
             
             try {
                 await target.ban({ reason });
-                return message.reply(`✅ Successfully banned ${target.user.tag}. Reason: ${reason}`);
+                return message.react('🔨');
             } catch (error) {
                 return message.reply('Failed to ban user. Check bot role hierarchy.');
             }
         }
 
-        // 2. $lock (Restricted to ownerz role only)
+        // 2. $lock (Restricted to ownerz role only) -> Reacts with 🔒
         if (command === 'lock') {
             if (!isOwner) {
                 return message.reply({ content: '❌ You need the **ownerz** role to lock channels.', ephemeral: true });
@@ -101,14 +102,14 @@ client.on('messageCreate', async message => {
 
             try {
                 await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false });
-                return message.reply('🔒 This channel has been **locked**. Members can no longer send messages.');
+                return await message.react('🔒');
             } catch (error) {
                 console.error(error);
                 return message.reply('Failed to lock the channel.');
             }
         }
 
-        // 3. $unlock (Restricted to ownerz role only)
+        // 3. $unlock (Restricted to ownerz role only) -> Reacts with 🔓
         if (command === 'unlock') {
             if (!isOwner) {
                 return message.reply({ content: '❌ You need the **ownerz** role to unlock channels.', ephemeral: true });
@@ -116,7 +117,7 @@ client.on('messageCreate', async message => {
 
             try {
                 await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null });
-                return message.reply('🔓 This channel has been **unlocked**.');
+                return await message.react('🔓');
             } catch (error) {
                 console.error(error);
                 return message.reply('Failed to unlock the channel.');
@@ -197,7 +198,7 @@ client.on('messageCreate', async message => {
 
             try {
                 await target.timeout(minutes * 60 * 1000, reason);
-                return message.reply(`✅ Successfully muted ${target.user.tag} for ${minutes} minutes. Reason: ${reason}`);
+                return message.react('🔇');
             } catch (error) {
                 return message.reply('Failed to mute user. Check bot role hierarchy.');
             }
@@ -214,7 +215,7 @@ client.on('messageCreate', async message => {
 
             try {
                 await target.timeout(null);
-                return message.reply(`✅ Successfully unmuted ${target.user.tag}.`);
+                return message.react('🔊');
             } catch (error) {
                 return message.reply('Failed to unmute user.');
             }
