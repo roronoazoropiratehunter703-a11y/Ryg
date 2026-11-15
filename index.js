@@ -78,7 +78,7 @@ client.on('interactionCreate', async interaction => {
             }
 
             const embed = new EmbedBuilder()
-                .setTitle(':Sol: Solana Wallet & Investment Panel')
+                .setTitle('<:Sol:1571447315078840371> Solana Wallet & Investment Panel')
                 .setDescription('Click below to view your unique deposit address, check your balance, invest, or withdraw funds.')
                 .setColor(0x9945FF);
 
@@ -97,7 +97,7 @@ client.on('interactionCreate', async interaction => {
             }
 
             const embed = new EmbedBuilder()
-                .setTitle(':Sol: Support Ticket Panel')
+                .setTitle('<:Sol:1571447315078840371> Support Ticket Panel')
                 .setDescription('Click the button below to open a private support ticket channel.')
                 .setColor(0x3498DB);
 
@@ -167,7 +167,7 @@ client.on('interactionCreate', async interaction => {
         const balance = await getSolBalance(userWallet.publicKey.toBase58());
 
         const embed = new EmbedBuilder()
-            .setTitle(':Sol: Your Personal Deposit Vault')
+            .setTitle('<:Sol:1571447315078840371> Your Personal Deposit Vault')
             .addFields(
                 { name: 'Deposit Address (Solana)', value: `\`${userWallet.publicKey.toBase58()}\`` },
                 { name: 'Current Balance', value: `${balance} SOL` }
@@ -191,7 +191,7 @@ client.on('interactionCreate', async interaction => {
         const balance = await getSolBalance(userWallet.publicKey.toBase58());
 
         const embed = new EmbedBuilder()
-            .setTitle(':Sol: Your Personal Deposit Vault')
+            .setTitle('<:Sol:1571447315078840371> Your Personal Deposit Vault')
             .addFields(
                 { name: 'Deposit Address (Solana)', value: `\`${userWallet.publicKey.toBase58()}\`` },
                 { name: 'Current Balance', value: `${balance} SOL` }
@@ -338,7 +338,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     // 10. Ticket Tool: Close Channel
-    if (json => interaction.isButton() && interaction.customId === 'close_ticket') {
+    if (interaction.isButton() && interaction.customId === 'close_ticket') {
         await interaction.reply({ content: 'Closing ticket in 5 seconds...' });
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
     }
