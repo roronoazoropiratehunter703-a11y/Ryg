@@ -71,7 +71,7 @@ client.once('ready', async () => {
             CREATE TABLE IF NOT EXISTS user_referrals (
                 user_id TEXT PRIMARY KEY,
                 referred_by TEXT,
-                referral_count INTEGER DEFAULT 0
+                total_earned_sol REAL DEFAULT 0
             )
         `);
     } catch (e) {
@@ -221,7 +221,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 2. NEW: $leaderboard (Public) -> Top investors ranking
+        // 2. $leaderboard (Public) -> Top investors ranking
         if (command === 'leaderboard' || command === 'top') {
             await message.channel.sendTyping();
             try {
@@ -257,31 +257,58 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 3. NEW: $ref (Public) -> Affiliate referral generator & stats
+        // 3. $ref or $invite (Public) -> Affiliate generator and link-binding command ($ref @user)
         if (command === 'ref' || command === 'invite') {
+            const mentionedUser = message.mentions.users.first();
+
+            if (mentionedUser) {
+                if (mentionedUser.id === message.author.id) {
+                    return message.reply('❌ Nice try, anon. You cannot refer yourself.');
+                }
+
+                try {
+                    const checkRef = await db.execute({
+                        sql: `SELECT referred_by FROM user_referrals WHERE user_id = ?`,
+                        args: [message.author.id]
+                    });
+
+                    if (checkRef.rows.length > 0 && checkRef.rows[0].referred_by) {
+                        return message.reply('❌ You have already been bound to an affiliate recruiter.');
+                    }
+
+                    await db.execute({
+                        sql: `INSERT INTO user_referrals (user_id, referred_by, total_earned_sol) VALUES (?, ?, 0) ON CONFLICT(user_id) DO UPDATE SET referred_by = ?`,
+                        args: [message.author.id, mentionedUser.id, mentionedUser.id]
+                    });
+
+                    return message.reply(`✅ Successfully linked your affiliate uplink to recruiter <@${mentionedUser.id}>! They will earn a 15% cut of your profit distributions.`);
+                } catch (err) {
+                    console.error(err);
+                    return message.reply('❌ Failed to bind referral uplink.');
+                }
+            }
+
             try {
-                // Check if user has a referral record, create if not
                 let refRes = await db.execute({
                     sql: `SELECT * FROM user_referrals WHERE user_id = ?`,
                     args: [message.author.id]
                 });
 
-                if (refRes.rows.length === 0) {
-                    await db.execute({
-                        sql: `INSERT INTO user_referrals (user_id, referral_count) VALUES (?, 0)`,
-                        args: [message.author.id]
-                    });
-                }
-
-                const count = refRes.rows[0]?.referral_count || 0;
-                const refLink = `https://discord.gg/${message.guild.vanityCode || message.guild.id}?ref=${message.author.id}`;
+                const totalEarned = refRes.rows.length > 0 ? (refRes.rows[0].total_earned_sol || 0) : 0;
+                
+                const recruitedRes = await db.execute({
+                    sql: `SELECT COUNT(*) as count FROM user_referrals WHERE referred_by = ?`,
+                    args: [message.author.id]
+                });
+                const recruitedCount = recruitedRes.rows[0]?.count || 0;
 
                 const embed = new EmbedBuilder()
-                    .setTitle('<:Sol:1571447315078840371> OPERATOR AFFILIATE MATRIX')
-                    .setDescription('Invite fellow degens to the syndicate and expand your network influence.')
+                    .setTitle('<:Sol:1571447315078840371> OPERATOR AFFILIATE MATRIX (15% PROFIT KICKBACK)')
+                    .setDescription('Invite fellow operators to the syndicate. When they bind you using `$ref @username`, you automatically harvest **15% of their profit distributions** without reducing their stack!')
                     .addFields(
-                        { name: '🔗 Your Referral Link', value: `\`${refLink}\``, inline: false },
-                        { name: '👥 Successful Invites', value: `\`${count} Operators Recruited\``, inline: true }
+                        { name: '👥 Recruited Operators', value: `\`${recruitedCount} Operators Linked\``, inline: true },
+                        { name: '💰 Total Commissions Earned', value: `\`\`\`fix\n${totalEarned.toFixed(4)} SOL\`\`\``, inline: true },
+                        { name: '🔗 How to have friends bind you', value: `Have them type: \`$ref @${message.author.username}\``, inline: false }
                     )
                     .setColor(0x14F195)
                     .setFooter({ text: 'Rugged Protocol Referral System' });
@@ -390,7 +417,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        // 8. $distribute <total_profit_sol> (Owner only)
+        // 8. $distribute <total_profit_sol> (Owner only) -> Distributes profits, referral kickbacks, and automatically DMs users!
         if (command === 'distribute') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to execute profit distributions.', ephemeral: true });
@@ -410,20 +437,78 @@ client.on('messageCreate', async message => {
                 const totalInvestedRes = await db.execute(`SELECT SUM(amount_sol) as total FROM user_investments`);
                 const totalInvested = totalInvestedRes.rows[0]?.total || 1;
 
-                let summaryText = '';
+                let payouts = {}; // userId -> netProfit
+                let directProfits = {}; // userId -> pure user share before ref cut
+                let refCommissions = {}; // referrerId -> commission amount
+                let userReferrerMap = {}; // userId -> referrerId
+
                 for (const row of invSummary.rows) {
                     const share = row.user_total / totalInvested;
-                    const userProfit = share * profitAmount;
-                    summaryText += `• <@${row.user_id}>: +${userProfit.toFixed(4)} SOL\n`;
+                    const grossProfit = share * profitAmount;
+                    directProfits[row.user_id] = grossProfit;
+
+                    const refLookup = await db.execute({
+                        sql: `SELECT referred_by FROM user_referrals WHERE user_id = ?`,
+                        args: [row.user_id]
+                    });
+
+                    const referrerId = refLookup.rows.length > 0 ? refLookup.rows[0].referred_by : null;
+                    userReferrerMap[row.user_id] = referrerId;
+
+                    let netProfit = grossProfit;
+                    if (referrerId) {
+                        const refCommission = grossProfit * 0.15; // 15% referral cut
+                        netProfit = grossProfit - refCommission;
+
+                        refCommissions[referrerId] = (refCommissions[referrerId] || 0) + refCommission;
+
+                        await db.execute({
+                            sql: `UPDATE user_referrals SET total_earned_sol = total_earned_sol + ? WHERE user_id = ?`,
+                            args: [refCommission, referrerId]
+                        });
+                    }
+
+                    payouts[row.user_id] = (payouts[row.user_id] || 0) + netProfit;
+                }
+
+                // Add referral commissions to referrers' total payouts
+                for (const [refId, comm] of Object.entries(refCommissions)) {
+                    payouts[refId] = (payouts[refId] || 0) + comm;
+                }
+
+                let summaryText = '';
+                for (const [userId, amt] of Object.entries(payouts)) {
+                    summaryText += `• <@${userId}>: +${amt.toFixed(4)} SOL\n`;
                 }
 
                 const embed = new EmbedBuilder()
-                    .setTitle('<:Sol:1571447315078840371> PROFIT DISTRIBUTION LEDGER')
-                    .setDescription(`Successfully distributed **${profitAmount} SOL** across active operators proportionally:`)
+                    .setTitle('<:Sol:1571447315078840371> PROFIT DISTRIBUTION LEDGER (WITH 15% REF CUT)')
+                    .setDescription(`Successfully distributed **${profitAmount} SOL** across active operators and affiliates proportionally:`)
                     .addFields({ name: '📊 Payout Breakdown', value: summaryText || 'No payouts recorded.', inline: false })
                     .setColor(0x14F195)
                     .setFooter({ text: 'Rugged Protocol Automated Yield System' });
 
+                // --- AUTOMATED DM NOTIFICATIONS TO USERS ---
+                for (const [userId, amt] of Object.entries(payouts)) {
+                    try {
+                        const memberUser = await client.users.fetch(userId);
+                        if (memberUser) {
+                            let dmMsg = `💎 **Syndicate Profit Distribution Landed!**\nYour server wallet has been credited with **+${amt.toFixed(4)} SOL** from the recent pool execution.`;
+                            
+                            // If they earned extra commission as a referrer
+                            if (refCommissions[userId]) {
+                                dmMsg += `\n*(Includes +${refCommissions[userId].toFixed(4)} SOL affiliate commission from your recruited operators!)*`;
+                            }
+                            
+                            await memberUser.send(dmMsg);
+                        }
+                    } catch (dmErr) {
+                        // User might have DMs closed, skip silently
+                        console.error(`Could not DM user ${userId}:`, dmErr.message);
+                    }
+                }
+
+                // Reset investments table for the next cycle
                 await db.execute(`DELETE FROM user_investments`);
 
                 return message.reply({ embeds: [embed] });
