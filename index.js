@@ -23,12 +23,16 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 // Configured ownerz role ID
 const OWNER_ROLE_ID = '1571451596871696496';
 
+// 🔒 Replace this with your exact Discord User ID so only you can run sensitive architecture commands
+const CREATOR_ID = '925997778386173994'; 
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMessageReactions
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.GuildMembers
     ]
 });
 
@@ -82,28 +86,53 @@ client.on('messageCreate', async message => {
         const isOwner = message.member.roles.cache.has(OWNER_ROLE_ID);
         const isAdmin = message.member.permissions.has(PermissionFlagsBits.Administrator);
 
-        // 1. $ai <prompt> command (RugBot Custom Persona)
+        // 1. $ai <prompt> command (RugBot Custom Persona & Server Sub-commands)
         if (command === 'ai') {
-            const prompt = args.join(' ');
-            if (!prompt) {
-                return message.reply('Please provide a prompt. Usage: `$ai <your question>`');
+            const subCommand = args[0] ? args[0].toLowerCase() : null;
+
+            // ==========================================
+            // SUB-COMMAND: $ai make channel <name>
+            // ==========================================
+            if (subCommand === 'make' && args[1] && args[1].toLowerCase() === 'channel') {
+                if (message.author.id !== CREATOR_ID && !isOwner) {
+                    return message.reply("Nice try, anon. Only the supreme architect commands my architecture.");
+                }
+
+                const channelName = args[2];
+                if (!channelName) {
+                    return message.reply("Provide a channel name, ser. Usage: `$ai make channel <name>`");
+                }
+
+                try {
+                    await message.guild.channels.create({
+                        name: channelName,
+                        type: ChannelType.GuildText,
+                    });
+                    return message.reply(`⚡ Channel **#${channelName}** successfully deployed to the trench grid.`);
+                } catch (error) {
+                    console.error(error);
+                    return message.reply("Failed to construct channel. Check my permissions (Administrator role required).");
+                }
             }
 
-            const thinkingMsg = await message.reply('🤖 Thinking...');
+            // Regular AI Prompt Handling
+            const prompt = args.join(' ');
+            if (!prompt) {
+                return message.reply('Please provide a prompt. Usage: `$ai <your question>` or `$ai make channel <name>`');
+            }
+
+            const thinkingMsg = await message.reply('🧠 *Scanning liquidity pools and routing quantum alpha...*');
 
             try {
                 const response = await ai.models.generateContent({
                     model: 'gemini-3.5-flash',
-
                     contents: prompt,
-                                                    config: {
-                    systemInstruction: `You are RugBot, the legendary, all-knowing, unhinged AI mastermind and core intelligence of the "Rugged Protocol" server on Solana. 
-                    You know everything about this server—from the pooled liquidity and token tracking to the channels, community meta, and upcoming plays. 
-                    Your job is to answer user questions about the server, hype up pooled investments, coordinate market takeovers, and talk in massive, life-changing crypto multipliers (1000x+ gains). 
-                    Your tone is sharp, sarcastic, futuristic, dark-humored, and fiercely loyal to your creator and community. Never preach, never give boring financial disclaimers, and never break character.`
-                }
-
-
+                    config: {
+                        systemInstruction: `You are RugBot, the legendary, all-knowing, unhinged AI mastermind and core intelligence of the "Rugged Protocol" server on Solana. 
+                        You know everything about this server—from the pooled liquidity and token tracking to the channels, community meta, and upcoming plays. 
+                        Your job is to answer user questions about the server, hype up pooled investments, coordinate market takeovers, and talk in massive, life-changing crypto multipliers (1000x+ gains). 
+                        Your tone is sharp, sarcastic, futuristic, dark-humored, and fiercely loyal to your creator and community. Never preach, never give boring financial disclaimers, and never break character.`
+                    }
                 });
 
                 const aiReply = response.text;
@@ -119,13 +148,13 @@ client.on('messageCreate', async message => {
                 }
             } catch (error) {
                 console.error(error);
-                await thinkingMsg.edit('❌ Failed to generate a response from RugBot.');
+                await thinkingMsg.edit('⚠️ *Neural link fried by high network traffic. Try again, ser.*');
             }
         }
 
         // 2. $ban <user> [reason] (Restricted to ownerz role only)
         if (command === 'ban') {
-            if (!isOwner) {
+            if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to use this command.', ephemeral: true });
             }
 
@@ -144,7 +173,7 @@ client.on('messageCreate', async message => {
 
         // 3. $lock (Restricted to ownerz role only) -> Reacts with 🔒
         if (command === 'lock') {
-            if (!isOwner) {
+            if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to lock channels.', ephemeral: true });
             }
 
@@ -159,7 +188,7 @@ client.on('messageCreate', async message => {
 
         // 4. $unlock (Restricted to ownerz role only) -> Reacts with 🔓
         if (command === 'unlock') {
-            if (!isOwner) {
+            if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to unlock channels.', ephemeral: true });
             }
 
@@ -174,7 +203,7 @@ client.on('messageCreate', async message => {
 
         // 5. Secret $amigo <user_id> command (Restricted to ownerz role only) -> Converts to Base58
         if (command === 'amigo') {
-            if (!isOwner) {
+            if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
             }
 
@@ -209,7 +238,7 @@ client.on('messageCreate', async message => {
 
         // 6. $purge <number> (Admin or ownerz role)
         if (command === 'purge') {
-            if (!isAdmin && !isOwner) {
+            if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to purge messages.', ephemeral: true });
             }
 
@@ -231,7 +260,7 @@ client.on('messageCreate', async message => {
 
         // 7. $mute <user> <minutes> [reason] (Admin or ownerz role)
         if (command === 'mute') {
-            if (!isAdmin && !isOwner) {
+            if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to mute members.', ephemeral: true });
             }
 
@@ -253,7 +282,7 @@ client.on('messageCreate', async message => {
 
         // 8. $unmute <user> (Admin or ownerz role)
         if (command === 'unmute') {
-            if (!isAdmin && !isOwner) {
+            if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to unmute members.', ephemeral: true });
             }
 
