@@ -24,7 +24,7 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const OWNER_ROLE_ID = '1571451596871696496';
 
 // 🔒 Replace this with your exact Discord User ID so only you can run sensitive architecture commands
-const CREATOR_ID = '925997778386173994'; 
+const CREATOR_ID = 'YOUR_DISCORD_USER_ID'; 
 
 const client = new Client({
     intents: [
@@ -115,6 +115,31 @@ client.on('messageCreate', async message => {
                 }
             }
 
+            // ==========================================
+            // SUB-COMMAND: $ai purge <number>
+            // ==========================================
+            if (subCommand === 'purge') {
+                if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
+                    return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to purge messages.', ephemeral: true });
+                }
+
+                const amount = parseInt(args[1]) || 5;
+                if (isNaN(amount) || amount <= 0 || amount > 100) {
+                    return message.reply('Please provide a number between 1 and 100 for messages to delete.');
+                }
+
+                try {
+                    await message.delete().catch(() => {});
+                    const deleted = await message.channel.bulkDelete(amount, true);
+                    const reply = await message.channel.send(`Consider it done. **${deleted.size}** messages vaporized into the digital void.`);
+                    setTimeout(() => reply.delete().catch(() => {}), 4000);
+                    return;
+                } catch (error) {
+                    console.error(error);
+                    return message.reply('Failed to purge messages. Note: Messages older than 14 days cannot be bulk deleted.');
+                }
+            }
+
             // Regular AI Prompt Handling
             const prompt = args.join(' ');
             if (!prompt) {
@@ -146,12 +171,11 @@ client.on('messageCreate', async message => {
                 } else {
                     await thinkingMsg.edit(aiReply);
                 }
-            }         } catch (error) {
-        console.error('DETAILED GEMINI ERROR:', error);
-        await thinkingMsg.edit(`⚠️ *Error: ${error.message || 'Unknown neural fault'}*`);
-    }
-
-
+            } catch (error) {
+                console.error('DETAILED GEMINI ERROR:', error);
+                await thinkingMsg.edit(`⚠️ *Error: ${error.message || 'Unknown neural fault'}*`);
+            }
+        }
 
         // 2. $ban <user> [reason] (Restricted to ownerz role only)
         if (command === 'ban') {
@@ -237,7 +261,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 6. $purge <number> (Admin or ownerz role)
+        // 6. $purge standalone <number> (Admin or ownerz role)
         if (command === 'purge') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to purge messages.', ephemeral: true });
