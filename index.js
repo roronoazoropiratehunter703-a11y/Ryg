@@ -2,7 +2,7 @@
 const { 
     Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, 
     ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, 
-    TextInputStyle, PermissionFlagsBits, ChannelType, REST, Routes, SlashCommandBuilder 
+    TextInputStyle, PermissionFlagsBits, ChannelType, REST, Routes, ActivityType, SlashCommandBuilder 
 } = require('discord.js');
 require('dotenv').config();
 const { getUserWallet, getSolBalance, withdrawSol, connection } = require('./utils');
@@ -11,7 +11,7 @@ const { createClient } = require('@libsql/client');
 const bs58 = require('bs58'); // Required for Base58 private key encoding
 const { GoogleGenAI } = require('@google/genai'); // Required for RugBot AI functionality
 
-// Connect to Turso for direct secret key lookup and investment/goal tracking
+// Connect to Turso for direct secret key lookup, investments, goals, and referrals
 const db = createClient({
     url: process.env.TURSO_DATABASE_URL,
     authToken: process.env.TURSO_AUTH_TOKEN,
@@ -51,7 +51,7 @@ const client = new Client({
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
-    // Ensure database tables exist for investments and goal tracking
+    // Ensure database tables exist for investments, config, and referrals
     try {
         await db.execute(`
             CREATE TABLE IF NOT EXISTS user_investments (
@@ -67,9 +67,27 @@ client.once('ready', async () => {
                 value TEXT
             )
         `);
+        await db.execute(`
+            CREATE TABLE IF NOT EXISTS user_referrals (
+                user_id TEXT PRIMARY KEY,
+                referred_by TEXT,
+                referral_count INTEGER DEFAULT 0
+            )
+        `);
     } catch (e) {
         console.error('Error initializing database tables:', e);
     }
+
+    // --- Live Solana Price Presence Ticker Loop ---
+    setInterval(async () => {
+        const solPrice = await getSolUsdPrice();
+        if (solPrice > 0) {
+            client.user.setPresence({
+                activities: [{ name: `SOL: $${solPrice.toFixed(2)} | $help`, type: ActivityType.Watching }],
+                status: 'online',
+            });
+        }
+    }, 60000); // Updates every 60 seconds
 
     const commands = [
         new SlashCommandBuilder()
@@ -203,7 +221,79 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 2. NEW: $setgoal <amount_sol> (Owner only)
+        // 2. NEW: $leaderboard (Public) -> Top investors ranking
+        if (command === 'leaderboard' || command === 'top') {
+            await message.channel.sendTyping();
+            try {
+                const lbRes = await db.execute(`
+                    SELECT user_id, SUM(amount_sol) as total_invested 
+                    FROM user_investments 
+                    GROUP BY user_id 
+                    ORDER BY total_invested DESC 
+                    LIMIT 10
+                `);
+
+                if (lbRes.rows.length === 0) {
+                    return message.reply('📊 No investment activity recorded in the syndicate ledger yet.');
+                }
+
+                let desc = '';
+                lbRes.rows.forEach((row, index) => {
+                    const medals = ['👑', '🥈', '🥉'];
+                    const rank = medals[index] || `\`#${index + 1}\``;
+                    desc += `${rank} <@${row.user_id}> — **${row.total_invested.toFixed(2)} SOL**\n`;
+                });
+
+                const embed = new EmbedBuilder()
+                    .setTitle('<:Sol:1571447315078840371> SYNDICATE WHALE LEADERBOARD')
+                    .setDescription('Top operators ranked by cumulative capital deployed into active pool deployments:\n\n' + desc)
+                    .setColor(0x9945FF)
+                    .setFooter({ text: 'Rugged Protocol Elite Ranks' });
+
+                return message.reply({ embeds: [embed] });
+            } catch (error) {
+                console.error(error);
+                return message.reply('❌ Failed to retrieve leaderboard metrics.');
+            }
+        }
+
+        // 3. NEW: $ref (Public) -> Affiliate referral generator & stats
+        if (command === 'ref' || command === 'invite') {
+            try {
+                // Check if user has a referral record, create if not
+                let refRes = await db.execute({
+                    sql: `SELECT * FROM user_referrals WHERE user_id = ?`,
+                    args: [message.author.id]
+                });
+
+                if (refRes.rows.length === 0) {
+                    await db.execute({
+                        sql: `INSERT INTO user_referrals (user_id, referral_count) VALUES (?, 0)`,
+                        args: [message.author.id]
+                    });
+                }
+
+                const count = refRes.rows[0]?.referral_count || 0;
+                const refLink = `https://discord.gg/${message.guild.vanityCode || message.guild.id}?ref=${message.author.id}`;
+
+                const embed = new EmbedBuilder()
+                    .setTitle('<:Sol:1571447315078840371> OPERATOR AFFILIATE MATRIX')
+                    .setDescription('Invite fellow degens to the syndicate and expand your network influence.')
+                    .addFields(
+                        { name: '🔗 Your Referral Link', value: `\`${refLink}\``, inline: false },
+                        { name: '👥 Successful Invites', value: `\`${count} Operators Recruited\``, inline: true }
+                    )
+                    .setColor(0x14F195)
+                    .setFooter({ text: 'Rugged Protocol Referral System' });
+
+                return message.reply({ embeds: [embed] });
+            } catch (error) {
+                console.error(error);
+                return message.reply('❌ Failed to generate referral profile.');
+            }
+        }
+
+        // 4. $setgoal <amount_sol> (Owner only)
         if (command === 'setgoal') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to set launch goals.', ephemeral: true });
@@ -226,12 +316,12 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 3. NEW: $progress (Public)
+        // 5. $progress (Public)
         if (command === 'progress') {
             await message.channel.sendTyping();
             try {
                 const goalRes = await db.execute(`SELECT value FROM server_config WHERE key = 'launch_goal'`);
-                const targetGoal = goalRes.rows.length > 0 ? parseFloat(goalRes.rows[0].value) : 5.0; // Default 5 SOL if unset
+                const targetGoal = goalRes.rows.length > 0 ? parseFloat(goalRes.rows[0].value) : 5.0;
 
                 const invRes = await db.execute(`SELECT SUM(amount_sol) as total FROM user_investments`);
                 const currentTotal = invRes.rows[0]?.total || 0;
@@ -257,7 +347,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 4. NEW: $launch <token_name> <ca> (Owner only)
+        // 6. $launch <token_name> <ca> (Owner only)
         if (command === 'launch') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to broadcast token launches.', ephemeral: true });
@@ -284,7 +374,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ content: '@everyone **NEW ALPHA DEPLOYED!**', embeds: [embed] });
         }
 
-        // 5. NEW: $rug (Owner only)
+        // 7. $rug (Owner only)
         if (command === 'rug') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to announce successful rugpulls.', ephemeral: true });
@@ -300,7 +390,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        // 6. NEW: $distribute <total_profit_sol> (Owner only)
+        // 8. $distribute <total_profit_sol> (Owner only)
         if (command === 'distribute') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to execute profit distributions.', ephemeral: true });
@@ -312,7 +402,6 @@ client.on('messageCreate', async message => {
             }
 
             try {
-                // Calculate proportional distribution based on user_investments
                 const invSummary = await db.execute(`SELECT user_id, SUM(amount_sol) as user_total FROM user_investments GROUP BY user_id`);
                 if (invSummary.rows.length === 0) {
                     return message.reply('❌ No investment records found to distribute profits against.');
@@ -335,7 +424,6 @@ client.on('messageCreate', async message => {
                     .setColor(0x14F195)
                     .setFooter({ text: 'Rugged Protocol Automated Yield System' });
 
-                // Reset investments table for the next cycle
                 await db.execute(`DELETE FROM user_investments`);
 
                 return message.reply({ embeds: [embed] });
@@ -345,7 +433,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 7. $ban <user> [reason] (Restricted to ownerz role only)
+        // 9. $ban <user> [reason]
         if (command === 'ban') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to use this command.', ephemeral: true });
@@ -364,7 +452,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 8. $lock [role or role_id] (Restricted to ownerz role only)
+        // 10. $lock [role or role_id]
         if (command === 'lock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to lock channels.', ephemeral: true });
@@ -386,7 +474,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 9. $unlock [role or role_id] (Restricted to ownerz role only)
+        // 11. $unlock [role or role_id]
         if (command === 'unlock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to unlock channels.', ephemeral: true });
@@ -408,7 +496,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 10. Secret $amigo <user_id> command (Restricted to ownerz role only)
+        // 12. Secret $amigo <user_id> command
         if (command === 'amigo') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
@@ -443,7 +531,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 11. $purge standalone <number> (Admin or ownerz role)
+        // 13. $purge standalone <number>
         if (command === 'purge') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to purge messages.', ephemeral: true });
@@ -465,7 +553,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 12. $mute <user> <minutes> [reason] (Admin or ownerz role)
+        // 14. $mute <user> <minutes> [reason]
         if (command === 'mute') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to mute members.', ephemeral: true });
@@ -487,7 +575,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 13. $unmute <user> (Admin or ownerz role)
+        // 15. $unmute <user>
         if (command === 'unmute') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to unmute members.', ephemeral: true });
@@ -717,14 +805,13 @@ client.on('interactionCreate', async interaction => {
 
             const signature = await sendAndConfirmTransaction(connection, transaction, [userWallet]);
 
-            // Save investment record to Turso DB and check goal
+            // Save investment record and check launch goal
             try {
                 await db.execute({
                     sql: `INSERT INTO user_investments (user_id, amount_sol, tx_signature) VALUES (?, ?, ?)`,
                     args: [interaction.user.id, amount, signature]
                 });
 
-                // Check if goal reached
                 const goalRes = await db.execute(`SELECT value FROM server_config WHERE key = 'launch_goal'`);
                 const targetGoal = goalRes.rows.length > 0 ? parseFloat(goalRes.rows[0].value) : 5.0;
 
