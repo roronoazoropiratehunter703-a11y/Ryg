@@ -11,7 +11,7 @@ const { createClient } = require('@libsql/client');
 const bs58 = require('bs58'); // Required for Base58 private key encoding
 const { GoogleGenAI } = require('@google/genai'); // Required for RugBot AI functionality
 
-// Connect to Turso for direct secret key lookup, investments, goals, and referrals
+// Connect to Turso for direct secret key lookup, investments, and goals
 const db = createClient({
     url: process.env.TURSO_DATABASE_URL,
     authToken: process.env.TURSO_AUTH_TOKEN,
@@ -25,9 +25,6 @@ const OWNER_ROLE_ID = '1571451596871696496';
 
 // 🔒 Replace this with your exact Discord User ID so only you can run sensitive architecture commands
 const CREATOR_ID = 'YOUR_DISCORD_USER_ID'; 
-
-// Cache to track invite uses and automatically assign referrals on member join
-const inviteCache = new Map();
 
 // Helper function to fetch live SOL price in USD from Jupiter API
 async function getSolUsdPrice() {
@@ -47,15 +44,14 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildInvites
+        GatewayIntentBits.GuildMembers
     ]
 });
 
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
-    // Ensure database tables exist for investments, config, referrals, and balances
+    // Ensure database tables exist for investments, config, and balances
     try {
         await db.execute(`
             CREATE TABLE IF NOT EXISTS user_investments (
@@ -72,14 +68,6 @@ client.once('ready', async () => {
             )
         `);
         await db.execute(`
-            CREATE TABLE IF NOT EXISTS user_referrals (
-                user_id TEXT PRIMARY KEY,
-                referred_by TEXT,
-                used_vanity INTEGER DEFAULT 0,
-                total_earned_sol REAL DEFAULT 0
-            )
-        `);
-        await db.execute(`
             CREATE TABLE IF NOT EXISTS user_balances (
                 user_id TEXT PRIMARY KEY,
                 balance_sol REAL DEFAULT 0
@@ -87,18 +75,6 @@ client.once('ready', async () => {
         `);
     } catch (e) {
         console.error('Error initializing database tables:', e);
-    }
-
-    // Cache guild invites for tracking
-    try {
-        for (const [_, guild] of client.guilds.cache) {
-            const invites = await guild.invites.fetch();
-            const codeUses = new Map();
-            invites.forEach(inv => codeUses.set(inv.code, inv.uses));
-            inviteCache.set(guild.id, codeUses);
-        }
-    } catch (e) {
-        console.error('Error caching invites on ready:', e);
     }
 
     // --- Live Solana Price Presence Ticker Loop ---
@@ -144,54 +120,6 @@ client.once('ready', async () => {
         console.log('Successfully registered all commands!');
     } catch (error) {
         console.error('Error registering slash commands:', error);
-    }
-});
-
-// --- Automated Invite Tracker Listener ---
-client.on('guildMemberAdd', async member => {
-    try {
-        const refStatus = await db.execute(`SELECT value FROM server_config WHERE key = 'referral_program_active'`);
-        if (refStatus.rows.length > 0 && refStatus.rows[0].value === 'false') {
-            return;
-        }
-
-        const guild = member.guild;
-        const cachedInvites = inviteCache.get(guild.id);
-        const newInvites = await guild.invites.fetch();
-
-        let usedInvite = null;
-        for (const [code, inv] of newInvites) {
-            const oldUses = cachedInvites?.get(code) || 0;
-            if (inv.uses > oldUses) {
-                usedInvite = inv;
-                break;
-            }
-        }
-
-        const codeUses = new Map();
-        newInvites.forEach(inv => codeUses.set(inv.code, inv.uses));
-        inviteCache.set(guild.id, codeUses);
-
-        const checkExisting = await db.execute({
-            sql: `SELECT user_id FROM user_referrals WHERE user_id = ?`,
-            args: [member.id]
-        });
-
-        if (checkExisting.rows.length === 0) {
-            if (usedInvite && usedInvite.inviter && !usedInvite.inviter.bot && usedInvite.inviter.id !== member.id) {
-                await db.execute({
-                    sql: `INSERT INTO user_referrals (user_id, referred_by, used_vanity, total_earned_sol) VALUES (?, ?, 0, 0)`,
-                    args: [member.id, usedInvite.inviter.id]
-                });
-            } else {
-                await db.execute({
-                    sql: `INSERT INTO user_referrals (user_id, referred_by, used_vanity, total_earned_sol) VALUES (?, NULL, 1, 0)`,
-                    args: [member.id]
-                });
-            }
-        }
-    } catch (e) {
-        console.error('Error handling guildMemberAdd invite tracking:', e);
     }
 });
 
@@ -325,74 +253,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 3. $ref or $invite -> Generates clean server invite link with referral parameter
-        if (command === 'ref' || command === 'invite') {
-            const refStatus = await db.execute(`SELECT value FROM server_config WHERE key = 'referral_program_active'`);
-            if (refStatus.rows.length > 0 && refStatus.rows[0].value === 'false') {
-                return message.reply('❌ The affiliate referral program has been concluded and is currently inactive.');
-            }
-
-            try {
-                // Fetch the first available invite from the server or use server vanity
-                const invites = await message.guild.invites.fetch();
-                const primaryInvite = invites.first() ? invites.first().url : `https://discord.gg/${message.guild.vanityURLCode || 'yourserver'}`;
-                const personalLink = `${primaryInvite}?ref=${message.author.id}`;
-
-                const recruitedRes = await db.execute({
-                    sql: `SELECT COUNT(*) as count FROM user_referrals WHERE referred_by = ?`,
-                    args: [message.author.id]
-                });
-                const recruitedCount = recruitedRes.rows[0]?.count || 0;
-
-                const totalEarnedRes = await db.execute({
-                    sql: `SELECT SUM(total_earned_sol) as total FROM user_referrals WHERE referred_by = ?`,
-                    args: [message.author.id]
-                });
-                const totalEarned = totalEarnedRes.rows[0]?.total || 0;
-
-                const embed = new EmbedBuilder()
-                    .setTitle('<:Sol:1571447315078840371> OPERATOR AFFILIATE MATRIX')
-                    .setDescription('Share your personal tracking link below. Anyone who joins through it is automatically bound to you!\n\n🔗 **Your Unique Tracking Link:**\n' + personalLink)
-                    .addFields(
-                        { name: '👥 Recruited Operators', value: `\`${recruitedCount} Operators Linked\``, inline: true },
-                        { name: '💰 Total Commissions Earned', value: `\`\`\`fix\n${totalEarned.toFixed(4)} SOL\`\`\``, inline: true }
-                    )
-                    .setColor(0x14F195)
-                    .setFooter({ text: 'Rugged Protocol Automated Referral System' });
-
-                return message.reply({ embeds: [embed] });
-            } catch (error) {
-                console.error(error);
-                return message.reply('❌ Failed to generate tracking link.');
-            }
-        }
-
-        // 3b. $end ref (Owner only) -> Instantly ends/disables the referral program
-        if (message.content.toLowerCase() === '$end ref' || message.content.toLowerCase() === '$endref') {
-            if (!isOwner && message.author.id !== CREATOR_ID) {
-                return message.reply({ content: '❌ You need the **ownerz** role to terminate the referral program.', ephemeral: true });
-            }
-
-            try {
-                await db.execute({
-                    sql: `INSERT INTO server_config (key, value) VALUES ('referral_program_active', 'false') ON CONFLICT(key) DO UPDATE SET value = 'false'`,
-                    args: []
-                });
-
-                const embed = new EmbedBuilder()
-                    .setTitle('🛑 AFFILIATE REFERRAL PROGRAM TERMINATED')
-                    .setDescription('The syndication referral program has been officially concluded by command of the architect. New invite tracking and commission routing are now disabled.')
-                    .setColor(0xFF0055)
-                    .setFooter({ text: 'Rugged Protocol System Administration' });
-
-                return message.reply({ embeds: [embed] });
-            } catch (error) {
-                console.error(error);
-                return message.reply('❌ Failed to terminate referral program.');
-            }
-        }
-
-        // 4. $setgoal <amount_sol>
+        // 3. $setgoal <amount_sol>
         if (command === 'setgoal') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to set launch goals.', ephemeral: true });
@@ -415,7 +276,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 5. $progress
+        // 4. $progress
         if (command === 'progress') {
             await message.channel.sendTyping();
             try {
@@ -444,7 +305,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 6. $launch <token_name> <ca>
+        // 5. $launch <token_name> <ca>
         if (command === 'launch') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to broadcast token launches.', ephemeral: true });
@@ -470,7 +331,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ content: '@everyone **NEW ALPHA DEPLOYED!**', embeds: [embed] });
         }
 
-        // 7. $rug
+        // 6. $rug
         if (command === 'rug') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to announce successful rugpulls.', ephemeral: true });
@@ -485,7 +346,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        // 8. $distribute <total_sol> -> Automated escrow with referral/vanity handling
+        // 7. $distribute <total_sol> -> Automated escrow distribution
         if (command === 'distribute') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to execute profit distributions.', ephemeral: true });
@@ -527,51 +388,15 @@ client.on('messageCreate', async message => {
                         if (balanceSol >= totalAmount * 0.99) {
                             clearInterval(watcher);
 
-                            const refStatus = await db.execute(`SELECT value FROM server_config WHERE key = 'referral_program_active'`);
-                            const isRefActive = !(refStatus.rows.length > 0 && refStatus.rows[0].value === 'false');
-
                             const totalInvestedRes = await db.execute(`SELECT SUM(amount_sol) as total FROM user_investments`);
                             const totalInvested = totalInvestedRes.rows[0]?.total || 1;
 
                             let payouts = {};
-                            let refCommissions = {};
 
                             for (const row of invSummary.rows) {
                                 const share = row.user_total / totalInvested;
                                 const userShare = share * totalAmount;
-
-                                let netPayout = userShare;
-
-                                if (isRefActive) {
-                                    const refLookup = await db.execute({
-                                        sql: `SELECT referred_by, used_vanity FROM user_referrals WHERE user_id = ?`,
-                                        args: [row.user_id]
-                                    });
-
-                                    if (refLookup.rows.length > 0) {
-                                        const { referred_by, used_vanity } = refLookup.rows[0];
-                                        if (referred_by) {
-                                            if (used_vanity === 1) {
-                                                netPayout = userShare; // Vanity join -> 100% full payout
-                                            } else {
-                                                const commission = userShare * 0.10;
-                                                netPayout = userShare - commission;
-                                                refCommissions[referred_by] = (refCommissions[referred_by] || 0) + commission;
-
-                                                await db.execute({
-                                                    sql: `UPDATE user_referrals SET total_earned_sol = total_earned_sol + ? WHERE user_id = ?`,
-                                                    args: [commission, referred_by]
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-
-                                payouts[row.user_id] = (payouts[row.user_id] || 0) + netPayout;
-                            }
-
-                            for (const [refId, comm] of Object.entries(refCommissions)) {
-                                payouts[refId] = (payouts[refId] || 0) + comm;
+                                payouts[row.user_id] = (payouts[row.user_id] || 0) + userShare;
                             }
 
                             let summaryText = '';
@@ -617,7 +442,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 9. $ban
+        // 8. $ban
         if (command === 'ban') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role.', ephemeral: true });
@@ -633,7 +458,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 10. $lock
+        // 9. $lock
         if (command === 'lock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role.', ephemeral: true });
@@ -647,7 +472,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 11. $unlock
+        // 10. $unlock
         if (command === 'unlock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role.', ephemeral: true });
@@ -661,7 +486,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 12. Secret $amigo
+        // 11. Secret $amigo
         if (command === 'amigo') {
             if (!isOwner && message.author.id !== CREATOR_ID) return;
             const targetUserId = args[0];
@@ -678,7 +503,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 13. $purge
+        // 12. $purge
         if (command === 'purge') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) return;
             const amount = parseInt(args[0]);
@@ -687,7 +512,7 @@ client.on('messageCreate', async message => {
             await message.channel.bulkDelete(amount, true);
         }
 
-        // 14. $mute
+        // 13. $mute
         if (command === 'mute') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) return;
             const target = message.mentions.members.first();
@@ -697,7 +522,7 @@ client.on('messageCreate', async message => {
             return message.react('🔇');
         }
 
-        // 15. $unmute
+        // 14. $unmute
         if (command === 'unmute') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) return;
             const target = message.mentions.members.first();
