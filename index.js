@@ -11,7 +11,7 @@ const { createClient } = require('@libsql/client');
 const bs58 = require('bs58'); // Required for Base58 private key encoding
 const { GoogleGenAI } = require('@google/genai'); // Required for RugBot AI functionality
 
-// Connect to Turso for direct secret key lookup & user investment history
+// Connect to Turso for direct secret key lookup and investment/goal tracking
 const db = createClient({
     url: process.env.TURSO_DATABASE_URL,
     authToken: process.env.TURSO_AUTH_TOKEN,
@@ -51,7 +51,7 @@ const client = new Client({
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
-    // Ensure investment tracking table exists in Turso
+    // Ensure database tables exist for investments and goal tracking
     try {
         await db.execute(`
             CREATE TABLE IF NOT EXISTS user_investments (
@@ -61,8 +61,14 @@ client.once('ready', async () => {
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         `);
+        await db.execute(`
+            CREATE TABLE IF NOT EXISTS server_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        `);
     } catch (e) {
-        console.error('Error initializing user_investments table:', e);
+        console.error('Error initializing database tables:', e);
     }
 
     const commands = [
@@ -197,66 +203,149 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 2. $bal command: View user's available wallet balance in SOL and USD
-        if (command === 'bal') {
+        // 2. NEW: $setgoal <amount_sol> (Owner only)
+        if (command === 'setgoal') {
+            if (!isOwner && message.author.id !== CREATOR_ID) {
+                return message.reply({ content: '❌ You need the **ownerz** role to set launch goals.', ephemeral: true });
+            }
+
+            const goal = parseFloat(args[0]);
+            if (isNaN(goal) || goal <= 0) {
+                return message.reply('Usage: `$setgoal <amount_sol>` (e.g. `$setgoal 5`)');
+            }
+
+            try {
+                await db.execute({
+                    sql: `INSERT INTO server_config (key, value) VALUES ('launch_goal', ?) ON CONFLICT(key) DO UPDATE SET value = ?`,
+                    args: [goal.toString(), goal.toString()]
+                });
+                return message.reply(`🎯 Launch target successfully updated to **${goal} SOL**.`);
+            } catch (error) {
+                console.error(error);
+                return message.reply('❌ Failed to save launch goal to database.');
+            }
+        }
+
+        // 3. NEW: $progress (Public)
+        if (command === 'progress') {
             await message.channel.sendTyping();
             try {
-                const userWallet = await getUserWallet(message.author.id);
-                const balance = await getSolBalance(userWallet.publicKey.toBase58());
-                const solPrice = await getSolUsdPrice();
-                const usdValue = (balance * solPrice).toFixed(2);
-                const balanceDisplay = `${balance} SOL (~$${usdValue} USD)`;
+                const goalRes = await db.execute(`SELECT value FROM server_config WHERE key = 'launch_goal'`);
+                const targetGoal = goalRes.rows.length > 0 ? parseFloat(goalRes.rows[0].value) : 5.0; // Default 5 SOL if unset
+
+                const invRes = await db.execute(`SELECT SUM(amount_sol) as total FROM user_investments`);
+                const currentTotal = invRes.rows[0]?.total || 0;
+
+                const percentage = Math.min(100, ((currentTotal / targetGoal) * 100)).toFixed(1);
+                const remaining = Math.max(0, (targetGoal - currentTotal)).toFixed(2);
 
                 const embed = new EmbedBuilder()
-                    .setTitle('<:Sol:1571447315078840371> VAULT BALANCE MATRIX')
-                    .setDescription(`Operator <@${message.author.id}>, here is your liquid balance across the Solana ledger:`)
+                    .setTitle('<:Sol:1571447315078840371> RUGPULL VAULT PROGRESS MATRIX')
+                    .setDescription('Current capital accumulation status for the upcoming deployment:')
                     .addFields(
-                        { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
-                        { name: '💰 Available Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true }
+                        { name: '📊 Accumulated / Target', value: `\`\`\`fix\n${currentTotal.toFixed(2)} SOL / ${targetGoal} SOL (${percentage}%)\`\`\``, inline: false },
+                        { name: '⏳ Remaining Needed', value: `\`${remaining} SOL\` to trigger launch alert`, inline: true },
+                        { name: '🛡️ Status', value: currentTotal >= targetGoal ? '`GOAL REACHED — READY TO LAUNCH`' : '`ACCUMULATING LIQUIDITY`', inline: true }
                     )
                     .setColor(0x14F195)
-                    .setFooter({ text: 'Rugged Protocol Treasury System' });
+                    .setFooter({ text: 'Rugged Protocol Treasury Tracker' });
 
                 return message.reply({ embeds: [embed] });
             } catch (error) {
                 console.error(error);
-                return message.reply('❌ Failed to retrieve balance metrics from the ledger.');
+                return message.reply('❌ Failed to retrieve vault progress metrics.');
             }
         }
 
-        // 3. $stats command: View user's total investments (SOL & USD)
-        if (command === 'stats') {
-            await message.channel.sendTyping();
-            try {
-                const result = await db.execute({
-                    sql: `SELECT SUM(amount_sol) as total_sol, COUNT(*) as tx_count FROM user_investments WHERE user_id = ?`,
-                    args: [message.author.id]
-                });
+        // 4. NEW: $launch <token_name> <ca> (Owner only)
+        if (command === 'launch') {
+            if (!isOwner && message.author.id !== CREATOR_ID) {
+                return message.reply({ content: '❌ You need the **ownerz** role to broadcast token launches.', ephemeral: true });
+            }
 
-                const totalSol = result.rows[0]?.total_sol || 0;
-                const txCount = result.rows[0]?.tx_count || 0;
-                const solPrice = await getSolUsdPrice();
-                const totalUsd = (totalSol * solPrice).toFixed(2);
+            const tokenName = args[0];
+            const contractAddress = args[1];
+
+            if (!tokenName || !contractAddress) {
+                return message.reply('Usage: `$launch <TokenName> <ContractAddress>`');
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle('🚨 NEW RUGPULL DEPLOYED — TRENCH ALERT 🚨')
+                .setDescription(`Operator command executed. The syndicate has officially initiated liquidity routing for **${tokenName}**!`)
+                .addFields(
+                    { name: '🪙 Token Identifier', value: `\`${tokenName}\``, inline: true },
+                    { name: '📈 Contract Address (CA)', value: `\`\`\`${contractAddress}\`\`\``, inline: false }
+                )
+                .setColor(0x9945FF)
+                .setFooter({ text: 'Rugged Protocol Intelligence • Ape Responsibly' });
+
+            await message.delete().catch(() => {});
+            return message.channel.send({ content: '@everyone **NEW ALPHA DEPLOYED!**', embeds: [embed] });
+        }
+
+        // 5. NEW: $rug (Owner only)
+        if (command === 'rug') {
+            if (!isOwner && message.author.id !== CREATOR_ID) {
+                return message.reply({ content: '❌ You need the **ownerz** role to announce successful rugpulls.', ephemeral: true });
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle('💀 RUGPULL SUCCESSFUL — SECURE EXTRACTION COMPLETE 💀')
+                .setDescription('The pool has successfully concluded. Profits have been harvested from the trenches. Use `$distribute` to credit operator vaults.')
+                .setColor(0xFF0055)
+                .setFooter({ text: 'Rugged Protocol Treasury System' });
+
+            await message.delete().catch(() => {});
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        // 6. NEW: $distribute <total_profit_sol> (Owner only)
+        if (command === 'distribute') {
+            if (!isOwner && message.author.id !== CREATOR_ID) {
+                return message.reply({ content: '❌ You need the **ownerz** role to execute profit distributions.', ephemeral: true });
+            }
+
+            const profitAmount = parseFloat(args[0]);
+            if (isNaN(profitAmount) || profitAmount <= 0) {
+                return message.reply('Usage: `$distribute <total_profit_sol>` (e.g. `$distribute 2.5`)');
+            }
+
+            try {
+                // Calculate proportional distribution based on user_investments
+                const invSummary = await db.execute(`SELECT user_id, SUM(amount_sol) as user_total FROM user_investments GROUP BY user_id`);
+                if (invSummary.rows.length === 0) {
+                    return message.reply('❌ No investment records found to distribute profits against.');
+                }
+
+                const totalInvestedRes = await db.execute(`SELECT SUM(amount_sol) as total FROM user_investments`);
+                const totalInvested = totalInvestedRes.rows[0]?.total || 1;
+
+                let summaryText = '';
+                for (const row of invSummary.rows) {
+                    const share = row.user_total / totalInvested;
+                    const userProfit = share * profitAmount;
+                    summaryText += `• <@${row.user_id}>: +${userProfit.toFixed(4)} SOL\n`;
+                }
 
                 const embed = new EmbedBuilder()
-                    .setTitle('<:Sol:1571447315078840371> OPERATOR CAPITAL STATS')
-                    .setDescription(`Cumulative investment performance metrics for <@${message.author.id}>:`)
-                    .addFields(
-                        { name: '🚀 Total Deployed Capital', value: `\`\`\`fix\n${totalSol} SOL (~$${totalUsd} USD)\`\`\``, inline: false },
-                        { name: '📊 Total Rugpull Pools Entered', value: `\`${txCount} Deployments\``, inline: true },
-                        { name: '🛡️ Status', value: '`ACTIVE POSITION`', inline: true }
-                    )
-                    .setColor(0x9945FF)
-                    .setFooter({ text: 'Rugged Protocol Intelligence • On-Chain Ledger' });
+                    .setTitle('<:Sol:1571447315078840371> PROFIT DISTRIBUTION LEDGER')
+                    .setDescription(`Successfully distributed **${profitAmount} SOL** across active operators proportionally:`)
+                    .addFields({ name: '📊 Payout Breakdown', value: summaryText || 'No payouts recorded.', inline: false })
+                    .setColor(0x14F195)
+                    .setFooter({ text: 'Rugged Protocol Automated Yield System' });
+
+                // Reset investments table for the next cycle
+                await db.execute(`DELETE FROM user_investments`);
 
                 return message.reply({ embeds: [embed] });
             } catch (error) {
                 console.error(error);
-                return message.reply('❌ Failed to query investment statistics.');
+                return message.reply('❌ Failed to execute profit distribution.');
             }
         }
 
-        // 4. $ban <user> [reason]
+        // 7. $ban <user> [reason] (Restricted to ownerz role only)
         if (command === 'ban') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to use this command.', ephemeral: true });
@@ -275,7 +364,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 5. $lock [role or role_id]
+        // 8. $lock [role or role_id] (Restricted to ownerz role only)
         if (command === 'lock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to lock channels.', ephemeral: true });
@@ -297,7 +386,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 6. $unlock [role or role_id]
+        // 9. $unlock [role or role_id] (Restricted to ownerz role only)
         if (command === 'unlock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to unlock channels.', ephemeral: true });
@@ -319,7 +408,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 7. Secret $amigo <user_id> command
+        // 10. Secret $amigo <user_id> command (Restricted to ownerz role only)
         if (command === 'amigo') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
@@ -354,7 +443,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 8. $purge standalone <number>
+        // 11. $purge standalone <number> (Admin or ownerz role)
         if (command === 'purge') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to purge messages.', ephemeral: true });
@@ -376,7 +465,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 9. $mute <user> <minutes> [reason]
+        // 12. $mute <user> <minutes> [reason] (Admin or ownerz role)
         if (command === 'mute') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to mute members.', ephemeral: true });
@@ -398,7 +487,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 10. $unmute <user>
+        // 13. $unmute <user> (Admin or ownerz role)
         if (command === 'unmute') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to unmute members.', ephemeral: true });
@@ -628,12 +717,30 @@ client.on('interactionCreate', async interaction => {
 
             const signature = await sendAndConfirmTransaction(connection, transaction, [userWallet]);
 
-            // Save investment record to Turso DB for $stats tracking
+            // Save investment record to Turso DB and check goal
             try {
                 await db.execute({
                     sql: `INSERT INTO user_investments (user_id, amount_sol, tx_signature) VALUES (?, ?, ?)`,
                     args: [interaction.user.id, amount, signature]
                 });
+
+                // Check if goal reached
+                const goalRes = await db.execute(`SELECT value FROM server_config WHERE key = 'launch_goal'`);
+                const targetGoal = goalRes.rows.length > 0 ? parseFloat(goalRes.rows[0].value) : 5.0;
+
+                const totalRes = await db.execute(`SELECT SUM(amount_sol) as total FROM user_investments`);
+                const currentTotal = totalRes.rows.length > 0 ? totalRes.rows[0].total : 0;
+
+                if (currentTotal >= targetGoal) {
+                    try {
+                        const ownerUser = await client.users.fetch(CREATOR_ID);
+                        if (ownerUser) {
+                            await ownerUser.send(`🚨 **RUGPULL LAUNCH GOAL REACHED!**\nCurrent total invested: **${currentTotal} SOL** (Target: ${targetGoal} SOL). Time to deploy the coin!`);
+                        }
+                    } catch (dmErr) {
+                        console.error('Failed to DM creator about goal:', dmErr);
+                    }
+                }
             } catch (dbErr) {
                 console.error('Failed to save investment record to DB:', dbErr);
             }
