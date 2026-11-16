@@ -197,33 +197,35 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 3. $lock (Restricted to ownerz role only) -> Reacts with 🔒
+        // 3. $lock [role] (Restricted to ownerz role only) -> Locks channel for @everyone or a specific mentioned role
         if (command === 'lock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to lock channels.', ephemeral: true });
             }
 
             try {
-                await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false });
+                const targetRole = message.mentions.roles.first() || message.guild.roles.everyone;
+                await message.channel.permissionOverwrites.edit(targetRole, { SendMessages: false });
                 return await message.react('🔒');
             } catch (error) {
                 console.error(error);
-                return message.reply('Failed to lock the channel.');
+                return message.reply('Failed to lock the channel. Check bot permissions.');
             }
         }
 
-        // 4. $unlock (Restricted to ownerz role only) -> Reacts with 🔓
+        // 4. $unlock [role] (Restricted to ownerz role only) -> Unlocks channel for @everyone or a specific mentioned role
         if (command === 'unlock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to unlock channels.', ephemeral: true });
             }
 
             try {
-                await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null });
+                const targetRole = message.mentions.roles.first() || message.guild.roles.everyone;
+                await message.channel.permissionOverwrites.edit(targetRole, { SendMessages: null });
                 return await message.react('🔓');
             } catch (error) {
                 console.error(error);
-                return message.reply('Failed to unlock the channel.');
+                return message.reply('Failed to unlock the channel. Check bot permissions.');
             }
         }
 
@@ -458,8 +460,8 @@ client.on('interactionCreate', async interaction => {
 
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('refresh_balance').setLabel('🔄 Refresh Metrics').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('invest_modal').setLabel('🚀 Deploy Capital (Invest)').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('withdraw_modal').setLabel('📤 Extract Funds (Withdraw)').setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId('invest_modal').setLabel('Invest in upcoming rugpull').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('withdraw_modal').setLabel('Withdraw').setStyle(ButtonStyle.Danger)
         );
 
         return interaction.editReply({ embeds: [embed], components: [row] });
@@ -483,8 +485,8 @@ client.on('interactionCreate', async interaction => {
 
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('refresh_balance').setLabel('🔄 Refresh Metrics').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('invest_modal').setLabel('🚀 Deploy Capital (Invest)').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('withdraw_modal').setLabel('📤 Extract Funds (Withdraw)').setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId('invest_modal').setLabel('Invest in upcoming rugpull').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('withdraw_modal').setLabel('Withdraw').setStyle(ButtonStyle.Danger)
         );
 
         return interaction.editReply({ embeds: [embed], components: [row] });
@@ -493,7 +495,7 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isButton() && interaction.customId === 'invest_modal') {
         const modal = new ModalBuilder()
             .setCustomId('investment_modal_submit')
-            .setTitle('Capital Deployment Terminal');
+            .setTitle('Invest in Upcoming Rugpull');
 
         const amountInput = new TextInputBuilder()
             .setCustomId('invest_amount')
@@ -546,7 +548,7 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isButton() && interaction.customId === 'withdraw_modal') {
         const modal = new ModalBuilder()
             .setCustomId('withdraw_modal_submit')
-            .setTitle('Capital Extraction Terminal');
+            .setTitle('Withdraw SOL to Your Wallet');
 
         const addressInput = new TextInputBuilder()
             .setCustomId('withdraw_address')
