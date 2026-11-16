@@ -71,6 +71,7 @@ client.once('ready', async () => {
             CREATE TABLE IF NOT EXISTS user_referrals (
                 user_id TEXT PRIMARY KEY,
                 referred_by TEXT,
+                used_vanity INTEGER DEFAULT 0,
                 total_earned_sol REAL DEFAULT 0
             )
         `);
@@ -264,9 +265,10 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 3. $ref or $invite (Public) -> Affiliate generator and link-binding command ($ref @user)
+        // 3. $ref or $invite (Public) -> Supports optional vanity flag ($ref @user or $ref @user vanity)
         if (command === 'ref' || command === 'invite') {
             const mentionedUser = message.mentions.users.first();
+            const usedVanity = args.includes('vanity') || args.includes('true') ? 1 : 0;
 
             if (mentionedUser) {
                 if (mentionedUser.id === message.author.id) {
@@ -284,11 +286,12 @@ client.on('messageCreate', async message => {
                     }
 
                     await db.execute({
-                        sql: `INSERT INTO user_referrals (user_id, referred_by, total_earned_sol) VALUES (?, ?, 0) ON CONFLICT(user_id) DO UPDATE SET referred_by = ?`,
-                        args: [message.author.id, mentionedUser.id, mentionedUser.id]
+                        sql: `INSERT INTO user_referrals (user_id, referred_by, used_vanity, total_earned_sol) VALUES (?, ?, ?, 0) ON CONFLICT(user_id) DO UPDATE SET referred_by = ?, used_vanity = ?`,
+                        args: [message.author.id, mentionedUser.id, usedVanity, mentionedUser.id, usedVanity]
                     });
 
-                    return message.reply(`✅ Successfully linked your affiliate uplink to recruiter <@${mentionedUser.id}>! They will earn a 15% cut of your profit distributions.`);
+                    const modeText = usedVanity ? '**Vanity Mode (100% full payout for you)**' : '**Standard Mode (90% payout, 10% to recruiter)**';
+                    return message.reply(`✅ Successfully linked your affiliate uplink to recruiter <@${mentionedUser.id}>! Mode: ${modeText}.`);
                 } catch (err) {
                     console.error(err);
                     return message.reply('❌ Failed to bind referral uplink.');
@@ -310,12 +313,12 @@ client.on('messageCreate', async message => {
                 const recruitedCount = recruitedRes.rows[0]?.count || 0;
 
                 const embed = new EmbedBuilder()
-                    .setTitle('<:Sol:1571447315078840371> OPERATOR AFFILIATE MATRIX (15% PROFIT KICKBACK)')
-                    .setDescription('Invite fellow operators to the syndicate. When they bind you using `$ref @username`, you automatically harvest **15% of their profit distributions** without reducing their stack!')
+                    .setTitle('<:Sol:1571447315078840371> OPERATOR AFFILIATE MATRIX')
+                    .setDescription('Invite fellow operators. Standard referrals route 10% of their payout to your wallet. Vanity links grant them 100% full payouts.')
                     .addFields(
                         { name: '👥 Recruited Operators', value: `\`${recruitedCount} Operators Linked\``, inline: true },
                         { name: '💰 Total Commissions Earned', value: `\`\`\`fix\n${totalEarned.toFixed(4)} SOL\`\`\``, inline: true },
-                        { name: '🔗 How to have friends bind you', value: `Have them type: \`$ref @${message.author.username}\``, inline: false }
+                        { name: '🔗 Binding Usage', value: `Type: \`$ref @username\` or \`$ref @username vanity\``, inline: false }
                     )
                     .setColor(0x14F195)
                     .setFooter({ text: 'Rugged Protocol Referral System' });
@@ -424,7 +427,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        // 8. $distribute <total_sol_to_distribute> (Owner only) -> Generates a dedicated temporary escrow wallet & watches for funding
+        // 8. $distribute <total_sol_to_distribute> (Owner only) -> Temporary Escrow + 10% referral split (or full payout if vanity)
         if (command === 'distribute') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to execute profit distributions.', ephemeral: true });
@@ -444,7 +447,6 @@ client.on('messageCreate', async message => {
                 // Generate a fresh, temporary escrow keypair for this distribution session
                 const escrowKeypair = Keypair.generate();
                 const escrowPubkeyStr = escrowKeypair.publicKey.toBase58();
-                const escrowSecretJson = JSON.stringify(Array.from(escrowKeypair.secretKey));
 
                 const embed = new EmbedBuilder()
                     .setTitle('<:Sol:1571447315078840371> AUTOMATED ESCROW DISTRIBUTION GATEWAY')
@@ -479,27 +481,35 @@ client.on('messageCreate', async message => {
                                 const userShare = share * totalAmount;
 
                                 const refLookup = await db.execute({
-                                    sql: `SELECT referred_by FROM user_referrals WHERE user_id = ?`,
+                                    sql: `SELECT referred_by, used_vanity FROM user_referrals WHERE user_id = ?`,
                                     args: [row.user_id]
                                 });
 
-                                const referrerId = refLookup.rows.length > 0 ? refLookup.rows[0].referred_by : null;
-
                                 let netPayout = userShare;
-                                if (referrerId) {
-                                    const refCommission = userShare * 0.15;
-                                    netPayout = userShare - refCommission;
-                                    refCommissions[referrerId] = (refCommissions[referrerId] || 0) + refCommission;
+                                if (refLookup.rows.length > 0) {
+                                    const { referred_by, used_vanity } = refLookup.rows[0];
+                                    if (referred_by) {
+                                        if (used_vanity === 1) {
+                                            // Vanity link used: User gets 100% full payout, referrer doesn't take 10% from them
+                                            netPayout = userShare;
+                                        } else {
+                                            // Standard referral: User gets 10% less, 10% goes to recruiter's wallet balance
+                                            const commission = userShare * 0.10;
+                                            netPayout = userShare - commission;
+                                            refCommissions[referred_by] = (refCommissions[referred_by] || 0) + commission;
 
-                                    await db.execute({
-                                        sql: `UPDATE user_referrals SET total_earned_sol = total_earned_sol + ? WHERE user_id = ?`,
-                                        args: [refCommission, referrerId]
-                                    });
+                                            await db.execute({
+                                                sql: `UPDATE user_referrals SET total_earned_sol = total_earned_sol + ? WHERE user_id = ?`,
+                                                args: [commission, referred_by]
+                                            });
+                                        }
+                                    }
                                 }
 
                                 payouts[row.user_id] = (payouts[row.user_id] || 0) + netPayout;
                             }
 
+                            // Add referral commissions to referrers' server wallets
                             for (const [refId, comm] of Object.entries(refCommissions)) {
                                 payouts[refId] = (payouts[refId] || 0) + comm;
                             }
@@ -517,7 +527,7 @@ client.on('messageCreate', async message => {
 
                             const successEmbed = new EmbedBuilder()
                                 .setTitle('<:Sol:1571447315078840371> ESCROW FUNDED & DISTRIBUTED')
-                                .setDescription(`Deposit detected! Funds successfully processed and credited to server wallets. Operators can now withdraw anytime via \`/walletpanel\`.`)
+                                .setDescription(`Deposit detected! Funds successfully processed with referral/vanity rules applied. Operators can now withdraw anytime via \`/walletpanel\`.`)
                                 .addFields({ name: '📊 Server Wallet Crediting Ledger', value: summaryText, inline: false })
                                 .setColor(0x14F195)
                                 .setFooter({ text: 'Rugged Protocol Escrow Completed' });
@@ -826,17 +836,21 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isButton() && interaction.customId === 'view_panel') {
         await interaction.deferReply({ ephemeral: true });
         const userWallet = await getUserWallet(interaction.user.id);
-        const balance = await getSolBalance(userWallet.publicKey.toBase58());
+        
+        // Pull balance from persistent user_balances table
+        const balRes = await db.execute({ sql: `SELECT balance_sol FROM user_balances WHERE user_id = ?`, args: [interaction.user.id] });
+        const serverBalance = balRes.rows.length > 0 ? balRes.rows[0].balance_sol : 0;
+        
         const solPrice = await getSolUsdPrice();
-        const usdValue = (balance * solPrice).toFixed(2);
-        const balanceDisplay = `${balance} SOL (~$${usdValue} USD)`;
+        const usdValue = (serverBalance * solPrice).toFixed(2);
+        const balanceDisplay = `${serverBalance.toFixed(4)} SOL (~$${usdValue} USD)`;
 
         const embed = new EmbedBuilder()
             .setTitle('<:Sol:1571447315078840371> SECURE VAULT CONTROL CENTER')
             .setDescription('Your dedicated on-chain custody terminal is active. Review your parameters below before executing capital operations.')
             .addFields(
                 { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
-                { name: '💰 Available Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true },
+                { name: '💰 Available Server Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true },
                 { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
             )
             .setColor(0x14F195)
@@ -854,17 +868,20 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isButton() && interaction.customId === 'refresh_balance') {
         await interaction.deferUpdate();
         const userWallet = await getUserWallet(interaction.user.id);
-        const balance = await getSolBalance(userWallet.publicKey.toBase58());
+        
+        const balRes = await db.execute({ sql: `SELECT balance_sol FROM user_balances WHERE user_id = ?`, args: [interaction.user.id] });
+        const serverBalance = balRes.rows.length > 0 ? balRes.rows[0].balance_sol : 0;
+        
         const solPrice = await getSolUsdPrice();
-        const usdValue = (balance * solPrice).toFixed(2);
-        const balanceDisplay = `${balance} SOL (~$${usdValue} USD)`;
+        const usdValue = (serverBalance * solPrice).toFixed(2);
+        const balanceDisplay = `${serverBalance.toFixed(4)} SOL (~$${usdValue} USD)`;
 
         const embed = new EmbedBuilder()
             .setTitle('<:Sol:1571447315078840371> SECURE VAULT CONTROL CENTER')
             .setDescription('Metrics successfully re-synchronized with the Solana mainnet ledger.')
             .addFields(
                 { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
-                { name: '💰 Available Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true },
+                { name: '💰 Available Server Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true },
                 { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
             )
             .setColor(0x14F195)
@@ -996,8 +1013,22 @@ client.on('interactionCreate', async interaction => {
         }
 
         try {
+            // Check server balance before withdrawing
+            const balRes = await db.execute({ sql: `SELECT balance_sol FROM user_balances WHERE user_id = ?`, args: [interaction.user.id] });
+            const currentBal = balRes.rows.length > 0 ? balRes.rows[0].balance_sol : 0;
+
+            if (currentBal < amount) {
+                return interaction.editReply({ content: `❌ Insufficient server balance! Available: ${currentBal.toFixed(4)} SOL.` });
+            }
+
             const userWallet = await getUserWallet(interaction.user.id);
             const signature = await withdrawSol(userWallet, recipientAddress, amount);
+
+            // Deduct from server balance
+            await db.execute({
+                sql: `UPDATE user_balances SET balance_sol = balance_sol - ? WHERE user_id = ?`,
+                args: [amount, interaction.user.id]
+            });
 
             return interaction.editReply({ 
                 content: `✅ **Extraction Complete**\nTransferred **${amount} SOL** to \`${recipientAddress}\`\nTx Hash: \`https://solscan.io/tx/${signature}\`` 
