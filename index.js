@@ -24,7 +24,7 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const OWNER_ROLE_ID = '1571451596871696496';
 
 // 🔒 Replace this with your exact Discord User ID so only you can run sensitive architecture commands
-const CREATOR_ID = '1571451596871696496'; 
+const CREATOR_ID = 'YOUR_DISCORD_USER_ID'; 
 
 // Helper function to fetch live SOL price in USD from Jupiter API
 async function getSolUsdPrice() {
@@ -417,35 +417,32 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        // 8. $distribute <total_profit_sol> (Owner only) -> Distributes profits, referral kickbacks, and automatically DMs users!
+        // 8. $distribute <total_sol_to_distribute> (Owner only) -> Gives deposit address prompt & distributes capital/yields + referral cut + DMs
         if (command === 'distribute') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to execute profit distributions.', ephemeral: true });
             }
 
-            const profitAmount = parseFloat(args[0]);
-            if (isNaN(profitAmount) || profitAmount <= 0) {
-                return message.reply('Usage: `$distribute <total_profit_sol>` (e.g. `$distribute 2.5`)');
+            const totalAmount = parseFloat(args[0]);
+            if (isNaN(totalAmount) || totalAmount <= 0) {
+                return message.reply('Usage: `$distribute <total_sol>` (e.g. `$distribute 0.002` to return capital + profits)');
             }
 
             try {
                 const invSummary = await db.execute(`SELECT user_id, SUM(amount_sol) as user_total FROM user_investments GROUP BY user_id`);
                 if (invSummary.rows.length === 0) {
-                    return message.reply('❌ No investment records found to distribute profits against.');
+                    return message.reply('❌ No investment records found to distribute funds against.');
                 }
 
                 const totalInvestedRes = await db.execute(`SELECT SUM(amount_sol) as total FROM user_investments`);
                 const totalInvested = totalInvestedRes.rows[0]?.total || 1;
 
-                let payouts = {}; // userId -> netProfit
-                let directProfits = {}; // userId -> pure user share before ref cut
-                let refCommissions = {}; // referrerId -> commission amount
-                let userReferrerMap = {}; // userId -> referrerId
+                let payouts = {};
+                let refCommissions = {};
 
                 for (const row of invSummary.rows) {
                     const share = row.user_total / totalInvested;
-                    const grossProfit = share * profitAmount;
-                    directProfits[row.user_id] = grossProfit;
+                    const userShare = share * totalAmount; // Principal return + yield proportion
 
                     const refLookup = await db.execute({
                         sql: `SELECT referred_by FROM user_referrals WHERE user_id = ?`,
@@ -453,13 +450,11 @@ client.on('messageCreate', async message => {
                     });
 
                     const referrerId = refLookup.rows.length > 0 ? refLookup.rows[0].referred_by : null;
-                    userReferrerMap[row.user_id] = referrerId;
 
-                    let netProfit = grossProfit;
+                    let netPayout = userShare;
                     if (referrerId) {
-                        const refCommission = grossProfit * 0.15; // 15% referral cut
-                        netProfit = grossProfit - refCommission;
-
+                        const refCommission = userShare * 0.15; // 15% referral cut
+                        netPayout = userShare - refCommission;
                         refCommissions[referrerId] = (refCommissions[referrerId] || 0) + refCommission;
 
                         await db.execute({
@@ -468,53 +463,54 @@ client.on('messageCreate', async message => {
                         });
                     }
 
-                    payouts[row.user_id] = (payouts[row.user_id] || 0) + netProfit;
+                    payouts[row.user_id] = (payouts[row.user_id] || 0) + netPayout;
                 }
 
-                // Add referral commissions to referrers' total payouts
                 for (const [refId, comm] of Object.entries(refCommissions)) {
                     payouts[refId] = (payouts[refId] || 0) + comm;
                 }
 
                 let summaryText = '';
                 for (const [userId, amt] of Object.entries(payouts)) {
-                    summaryText += `• <@${userId}>: +${amt.toFixed(4)} SOL\n`;
+                    summaryText += `• <@${userId}>: +${amt.toFixed(4)} SOL credited to server wallet\n`;
                 }
 
-                const embed = new EmbedBuilder()
-                    .setTitle('<:Sol:1571447315078840371> PROFIT DISTRIBUTION LEDGER (WITH 15% REF CUT)')
-                    .setDescription(`Successfully distributed **${profitAmount} SOL** across active operators and affiliates proportionally:`)
-                    .addFields({ name: '📊 Payout Breakdown', value: summaryText || 'No payouts recorded.', inline: false })
-                    .setColor(0x14F195)
-                    .setFooter({ text: 'Rugged Protocol Automated Yield System' });
+                const mainWalletPubkey = process.env.MAIN_WALLET_PUBKEY;
 
-                // --- AUTOMATED DM NOTIFICATIONS TO USERS ---
+                const embed = new EmbedBuilder()
+                    .setTitle('<:Sol:1571447315078840371> FUND DISTRIBUTION GATEWAY')
+                    .setDescription(
+                        `To execute this distribution of **${totalAmount} SOL** (Principal + Yield), please fund the pool treasury below.\n\n` +
+                        `📥 **Send ${totalAmount} SOL to Main Vault:**\n\`\`\`${mainWalletPubkey}\`\`\`\n` +
+                        `Once funded, the following server wallets have been credited:`
+                    )
+                    .addFields({ name: '📊 Server Wallet Crediting Ledger', value: summaryText || 'No accounts found.', inline: false })
+                    .setColor(0x14F195)
+                    .setFooter({ text: 'Rugged Protocol Automated Custody System' });
+
+                // DM users notifying them of their credited server wallet balance
                 for (const [userId, amt] of Object.entries(payouts)) {
                     try {
                         const memberUser = await client.users.fetch(userId);
                         if (memberUser) {
-                            let dmMsg = `💎 **Syndicate Profit Distribution Landed!**\nYour server wallet has been credited with **+${amt.toFixed(4)} SOL** from the recent pool execution.`;
-                            
-                            // If they earned extra commission as a referrer
+                            let dmMsg = `💎 **Funds Credited to Server Wallet!**\nYour server wallet has been credited with **+${amt.toFixed(4)} SOL** (Principal Return + Yield). You can now use the \`/walletpanel\` to withdraw it anytime.`;
                             if (refCommissions[userId]) {
-                                dmMsg += `\n*(Includes +${refCommissions[userId].toFixed(4)} SOL affiliate commission from your recruited operators!)*`;
+                                dmMsg += `\n*(Includes +${refCommissions[userId].toFixed(4)} SOL affiliate commission from recruited operators!)*`;
                             }
-                            
                             await memberUser.send(dmMsg);
                         }
                     } catch (dmErr) {
-                        // User might have DMs closed, skip silently
                         console.error(`Could not DM user ${userId}:`, dmErr.message);
                     }
                 }
 
-                // Reset investments table for the next cycle
+                // Clear investment records for the completed cycle
                 await db.execute(`DELETE FROM user_investments`);
 
                 return message.reply({ embeds: [embed] });
             } catch (error) {
                 console.error(error);
-                return message.reply('❌ Failed to execute profit distribution.');
+                return message.reply('❌ Failed to process distribution gateway.');
             }
         }
 
