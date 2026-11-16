@@ -26,6 +26,18 @@ const OWNER_ROLE_ID = '1571451596871696496';
 // 🔒 Replace this with your exact Discord User ID so only you can run sensitive architecture commands
 const CREATOR_ID = 'YOUR_DISCORD_USER_ID'; 
 
+// Helper function to fetch live SOL price in USD from Jupiter API
+async function getSolUsdPrice() {
+    try {
+        const response = await fetch('https://api.jup.ag/price/v3?ids=So11111111111111111111111111111111111111112');
+        const data = await response.json();
+        return data['So11111111111111111111111111111111111111112']?.usdPrice || 0;
+    } catch (error) {
+        console.error('Error fetching live SOL price:', error);
+        return 0;
+    }
+}
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -197,14 +209,20 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 3. $lock [role] (Restricted to ownerz role only) -> Locks channel for @everyone or a specific mentioned role
+        // 3. $lock [role or role_id] (Restricted to ownerz role only)
         if (command === 'lock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to lock channels.', ephemeral: true });
             }
 
             try {
-                const targetRole = message.mentions.roles.first() || message.guild.roles.everyone;
+                const targetRole = message.mentions.roles.first() || 
+                                   (args[0] ? message.guild.roles.cache.get(args[0]) : message.guild.roles.everyone);
+
+                if (!targetRole) {
+                    return message.reply('❌ Invalid role or Role ID provided.');
+                }
+
                 await message.channel.permissionOverwrites.edit(targetRole, { SendMessages: false });
                 return await message.react('🔒');
             } catch (error) {
@@ -213,14 +231,20 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 4. $unlock [role] (Restricted to ownerz role only) -> Unlocks channel for @everyone or a specific mentioned role
+        // 4. $unlock [role or role_id] (Restricted to ownerz role only)
         if (command === 'unlock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to unlock channels.', ephemeral: true });
             }
 
             try {
-                const targetRole = message.mentions.roles.first() || message.guild.roles.everyone;
+                const targetRole = message.mentions.roles.first() || 
+                                   (args[0] ? message.guild.roles.cache.get(args[0]) : message.guild.roles.everyone);
+
+                if (!targetRole) {
+                    return message.reply('❌ Invalid role or Role ID provided.');
+                }
+
                 await message.channel.permissionOverwrites.edit(targetRole, { SendMessages: null });
                 return await message.react('🔓');
             } catch (error) {
@@ -373,19 +397,15 @@ client.on('interactionCreate', async interaction => {
                 .setTitle('🎫 RUGGED PROTOCOL — SECURE SUPPORT DISPATCH')
                 .setDescription(
                     'Encountering network latency, transaction routing errors, or syndicate inquiries? \n\n' +
-                    'Initialize a secure, encrypted support channel below to connect directly with the operations team. All transcripts are confidential.'
+                    'Initialize a secure support channel below to connect directly with the operations team.'
                 )
                 .setColor(0x3498DB)
-                .addFields(
-                    { name: '🔒 Confidentiality', value: '`100% Private Room`', inline: true },
-                    { name: '⏱️ Response SLA', value: '`< 15 Minutes`', inline: true }
-                )
                 .setFooter({ text: 'Rugged Protocol Support Desk' });
 
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
                     .setCustomId('create_ticket')
-                    .setLabel('🎫 Open Secure Ticket')
+                    .setLabel('Open support ticket')
                     .setStyle(ButtonStyle.Secondary)
             );
 
@@ -446,13 +466,16 @@ client.on('interactionCreate', async interaction => {
         await interaction.deferReply({ ephemeral: true });
         const userWallet = await getUserWallet(interaction.user.id);
         const balance = await getSolBalance(userWallet.publicKey.toBase58());
+        const solPrice = await getSolUsdPrice();
+        const usdValue = (balance * solPrice).toFixed(2);
+        const balanceDisplay = `${balance} SOL (~$${usdValue} USD)`;
 
         const embed = new EmbedBuilder()
             .setTitle('<:Sol:1571447315078840371> SECURE VAULT CONTROL CENTER')
             .setDescription('Your dedicated on-chain custody terminal is active. Review your parameters below before executing capital operations.')
             .addFields(
                 { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
-                { name: '💰 Available Liquidity', value: `\`\`\`fix\n${balance} SOL\`\`\``, inline: true },
+                { name: '💰 Available Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true },
                 { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
             )
             .setColor(0x14F195)
@@ -471,13 +494,16 @@ client.on('interactionCreate', async interaction => {
         await interaction.deferUpdate();
         const userWallet = await getUserWallet(interaction.user.id);
         const balance = await getSolBalance(userWallet.publicKey.toBase58());
+        const solPrice = await getSolUsdPrice();
+        const usdValue = (balance * solPrice).toFixed(2);
+        const balanceDisplay = `${balance} SOL (~$${usdValue} USD)`;
 
         const embed = new EmbedBuilder()
             .setTitle('<:Sol:1571447315078840371> SECURE VAULT CONTROL CENTER')
             .setDescription('Metrics successfully re-synchronized with the Solana mainnet ledger.')
             .addFields(
                 { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
-                { name: '💰 Available Liquidity', value: `\`\`\`fix\n${balance} SOL\`\`\``, inline: true },
+                { name: '💰 Available Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true },
                 { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
             )
             .setColor(0x14F195)
