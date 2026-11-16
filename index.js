@@ -26,6 +26,9 @@ const OWNER_ROLE_ID = '1571451596871696496';
 // 🔒 Replace this with your exact Discord User ID so only you can run sensitive architecture commands
 const CREATOR_ID = 'YOUR_DISCORD_USER_ID'; 
 
+// Cache to track invite uses and automatically assign referrals on member join
+const inviteCache = new Map();
+
 // Helper function to fetch live SOL price in USD from Jupiter API
 async function getSolUsdPrice() {
     try {
@@ -44,14 +47,15 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.GuildMembers
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildInvites
     ]
 });
 
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
-    // Ensure database tables exist for investments, config, and referrals
+    // Ensure database tables exist for investments, config, referrals, and balances
     try {
         await db.execute(`
             CREATE TABLE IF NOT EXISTS user_investments (
@@ -75,7 +79,6 @@ client.once('ready', async () => {
                 total_earned_sol REAL DEFAULT 0
             )
         `);
-        // New table to track user server wallet balances persistently
         await db.execute(`
             CREATE TABLE IF NOT EXISTS user_balances (
                 user_id TEXT PRIMARY KEY,
@@ -84,6 +87,18 @@ client.once('ready', async () => {
         `);
     } catch (e) {
         console.error('Error initializing database tables:', e);
+    }
+
+    // Cache guild invites for tracking
+    try {
+        for (const [_, guild] of client.guilds.cache) {
+            const invites = await guild.invites.fetch();
+            const codeUses = new Map();
+            invites.forEach(inv => codeUses.set(inv.code, inv.uses));
+            inviteCache.set(guild.id, codeUses);
+        }
+    } catch (e) {
+        console.error('Error caching invites on ready:', e);
     }
 
     // --- Live Solana Price Presence Ticker Loop ---
@@ -95,7 +110,7 @@ client.once('ready', async () => {
                 status: 'online',
             });
         }
-    }, 60000); // Updates every 60 seconds
+    }, 60000);
 
     const commands = [
         new SlashCommandBuilder()
@@ -132,19 +147,70 @@ client.once('ready', async () => {
     }
 });
 
+// --- Automated Invite Tracker Listener ---
+client.on('guildMemberAdd', async member => {
+    try {
+        // Check if referral program has been disabled by owner
+        const refStatus = await db.execute(`SELECT value FROM server_config WHERE key = 'referral_program_active'`);
+        if (refStatus.rows.length > 0 && refStatus.rows[0].value === 'false') {
+            return; // Program is ended, skip tracking
+        }
+
+        const guild = member.guild;
+        const cachedInvites = inviteCache.get(guild.id);
+        const newInvites = await guild.invites.fetch();
+
+        let usedInvite = null;
+        for (const [code, inv] of newInvites) {
+            const oldUses = cachedInvites?.get(code) || 0;
+            if (inv.uses > oldUses) {
+                usedInvite = inv;
+                break;
+            }
+        }
+
+        // Update invite cache
+        const codeUses = new Map();
+        newInvites.forEach(inv => codeUses.set(inv.code, inv.uses));
+        inviteCache.set(guild.id, codeUses);
+
+        // Check if user already has a referral record
+        const checkExisting = await db.execute({
+            sql: `SELECT user_id FROM user_referrals WHERE user_id = ?`,
+            args: [member.id]
+        });
+
+        if (checkExisting.rows.length === 0) {
+            if (usedInvite && usedInvite.inviter && !usedInvite.inviter.bot && usedInvite.inviter.id !== member.id) {
+                // Bound to personal invite creator (Standard Referral -> 10% split)
+                await db.execute({
+                    sql: `INSERT INTO user_referrals (user_id, referred_by, used_vanity, total_earned_sol) VALUES (?, ?, 0, 0)`,
+                    args: [member.id, usedInvite.inviter.id]
+                });
+            } else {
+                // Joined via vanity link or non-tracked invite -> Vanity Mode (100% full payout)
+                await db.execute({
+                    sql: `INSERT INTO user_referrals (user_id, referred_by, used_vanity, total_earned_sol) VALUES (?, NULL, 1, 0)`,
+                    args: [member.id]
+                });
+            }
+        }
+    } catch (e) {
+        console.error('Error handling guildMemberAdd invite tracking:', e);
+    }
+});
+
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.guild) return;
 
-    // --- Prefix Commands ($ Commands) ---
     if (message.content.startsWith('$')) {
         const args = message.content.slice(1).trim().split(/ +/);
         const command = args.shift().toLowerCase();
 
-        // Check user permissions helper
         const isOwner = message.member.roles.cache.has(OWNER_ROLE_ID);
         const isAdmin = message.member.permissions.has(PermissionFlagsBits.Administrator);
 
-        // 1. $ai <prompt> command (RugBot Custom Persona & Server Sub-commands)
+        // 1. $ai <prompt> command
         if (command === 'ai') {
             const subCommand = args[0] ? args[0].toLowerCase() : null;
 
@@ -166,7 +232,7 @@ client.on('messageCreate', async message => {
                     return message.reply(`⚡ Channel **#${channelName}** successfully deployed to the trench grid.`);
                 } catch (error) {
                     console.error(error);
-                    return message.reply("Failed to construct channel. Check my permissions (Administrator role required).");
+                    return message.reply("Failed to construct channel. Check my permissions.");
                 }
             }
 
@@ -188,13 +254,13 @@ client.on('messageCreate', async message => {
                     return;
                 } catch (error) {
                     console.error(error);
-                    return message.reply('Failed to purge messages. Note: Messages older than 14 days cannot be bulk deleted.');
+                    return message.reply('Failed to purge messages.');
                 }
             }
 
             const prompt = args.join(' ');
             if (!prompt) {
-                return message.reply('Please provide a prompt. Usage: `$ai <your question>` or `$ai make channel <name>`');
+                return message.reply('Please provide a prompt. Usage: `$ai <your question>`');
             }
 
             const thinkingMsg = await message.reply('🧠 *Scanning liquidity pools and routing quantum alpha...*');
@@ -206,9 +272,8 @@ client.on('messageCreate', async message => {
                     config: {
                         systemInstruction: `You are RugBot, the sharp, sarcastic, unhinged AI mastermind of the "Rugged Protocol" server on Solana. 
                         Your personality is witty, dark-humored, and fiercely loyal to your creator and community. 
-                        - If the user's message is about crypto, trading, or tokens, talk in realistic, high-conviction market multipliers (2x to 100x gains), tactical plays, and solid entries without sounding like a fake larp.
-                        - If the user's message is casual chat or non-crypto talk, reply with your signature sarcastic attitude without forcing trading jargon into it unless it fits naturally. 
-                        Never preach, never give boring financial disclaimers, and never break character.`
+                        - If the user's message is about crypto, trading, or tokens, talk in realistic market multipliers (2x to 100x gains) and tactical plays.
+                        - If casual chat, reply with your signature sarcastic attitude. Never preach.`
                     }
                 });
 
@@ -224,12 +289,12 @@ client.on('messageCreate', async message => {
                     await thinkingMsg.edit(aiReply);
                 }
             } catch (error) {
-                console.error('DETAILED GEMINI ERROR:', error);
+                console.error('DETAILED GEMINIEROOR:', error);
                 await thinkingMsg.edit(`⚠️ *Error: ${error.message || 'Unknown neural fault'}*`);
             }
         }
 
-        // 2. $leaderboard (Public) -> Top investors ranking
+        // 2. $leaderboard / $top
         if (command === 'leaderboard' || command === 'top') {
             await message.channel.sendTyping();
             try {
@@ -254,7 +319,7 @@ client.on('messageCreate', async message => {
 
                 const embed = new EmbedBuilder()
                     .setTitle('<:Sol:1571447315078840371> SYNDICATE WHALE LEADERBOARD')
-                    .setDescription('Top operators ranked by cumulative capital deployed into active pool deployments:\n\n' + desc)
+                    .setDescription('Top operators ranked by cumulative capital deployed:\n\n' + desc)
                     .setColor(0x9945FF)
                     .setFooter({ text: 'Rugged Protocol Elite Ranks' });
 
@@ -265,72 +330,80 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 3. $ref or $invite (Public) -> Supports optional vanity flag ($ref @user or $ref @user vanity)
+        // 3. $ref or $invite -> Automatically generates personal invite link
         if (command === 'ref' || command === 'invite') {
-            const mentionedUser = message.mentions.users.first();
-            const usedVanity = args.includes('vanity') || args.includes('true') ? 1 : 0;
-
-            if (mentionedUser) {
-                if (mentionedUser.id === message.author.id) {
-                    return message.reply('❌ Nice try, anon. You cannot refer yourself.');
-                }
-
-                try {
-                    const checkRef = await db.execute({
-                        sql: `SELECT referred_by FROM user_referrals WHERE user_id = ?`,
-                        args: [message.author.id]
-                    });
-
-                    if (checkRef.rows.length > 0 && checkRef.rows[0].referred_by) {
-                        return message.reply('❌ You have already been bound to an affiliate recruiter.');
-                    }
-
-                    await db.execute({
-                        sql: `INSERT INTO user_referrals (user_id, referred_by, used_vanity, total_earned_sol) VALUES (?, ?, ?, 0) ON CONFLICT(user_id) DO UPDATE SET referred_by = ?, used_vanity = ?`,
-                        args: [message.author.id, mentionedUser.id, usedVanity, mentionedUser.id, usedVanity]
-                    });
-
-                    const modeText = usedVanity ? '**Vanity Mode (100% full payout for you)**' : '**Standard Mode (90% payout, 10% to recruiter)**';
-                    return message.reply(`✅ Successfully linked your affiliate uplink to recruiter <@${mentionedUser.id}>! Mode: ${modeText}.`);
-                } catch (err) {
-                    console.error(err);
-                    return message.reply('❌ Failed to bind referral uplink.');
-                }
+            // Check if referral program is active
+            const refStatus = await db.execute(`SELECT value FROM server_config WHERE key = 'referral_program_active'`);
+            if (refStatus.rows.length > 0 && refStatus.rows[0].value === 'false') {
+                return message.reply('❌ The affiliate referral program has been concluded and is currently inactive.');
             }
 
+            await message.channel.sendTyping();
             try {
-                let refRes = await db.execute({
-                    sql: `SELECT * FROM user_referrals WHERE user_id = ?`,
-                    args: [message.author.id]
+                const inviteChannel = message.guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.permissionsFor(message.guild.members.me).has(PermissionFlagsBits.CreateInstantInvite)) || message.channel;
+
+                const personalInvite = await inviteChannel.createInvite({
+                    maxAge: 0,
+                    maxUses: 0,
+                    unique: true,
+                    reason: `Affiliate invite link generated for ${message.author.tag}`
                 });
 
-                const totalEarned = refRes.rows.length > 0 ? (refRes.rows[0].total_earned_sol || 0) : 0;
-                
                 const recruitedRes = await db.execute({
                     sql: `SELECT COUNT(*) as count FROM user_referrals WHERE referred_by = ?`,
                     args: [message.author.id]
                 });
                 const recruitedCount = recruitedRes.rows[0]?.count || 0;
 
+                const totalEarnedRes = await db.execute({
+                    sql: `SELECT SUM(total_earned_sol) as total FROM user_referrals WHERE referred_by = ?`,
+                    args: [message.author.id]
+                });
+                const totalEarned = totalEarnedRes.rows[0]?.total || 0;
+
                 const embed = new EmbedBuilder()
                     .setTitle('<:Sol:1571447315078840371> OPERATOR AFFILIATE MATRIX')
-                    .setDescription('Invite fellow operators. Standard referrals route 10% of their payout to your wallet. Vanity links grant them 100% full payouts.')
+                    .setDescription('Share your personal invite link below. Anyone who joins through it is automatically bound to you!\n\n🔗 **Your Unique Invite Link:**\n' + personalInvite.url)
                     .addFields(
                         { name: '👥 Recruited Operators', value: `\`${recruitedCount} Operators Linked\``, inline: true },
-                        { name: '💰 Total Commissions Earned', value: `\`\`\`fix\n${totalEarned.toFixed(4)} SOL\`\`\``, inline: true },
-                        { name: '🔗 Binding Usage', value: `Type: \`$ref @username\` or \`$ref @username vanity\``, inline: false }
+                        { name: '💰 Total Commissions Earned', value: `\`\`\`fix\n${totalEarned.toFixed(4)} SOL\`\`\``, inline: true }
                     )
                     .setColor(0x14F195)
-                    .setFooter({ text: 'Rugged Protocol Referral System' });
+                    .setFooter({ text: 'Rugged Protocol Automated Referral System' });
 
                 return message.reply({ embeds: [embed] });
             } catch (error) {
                 console.error(error);
-                return message.reply('❌ Failed to generate referral profile.');
+                return message.reply('❌ Failed to generate personal invite link. Ensure bot has **Create Invite** permissions.');
             }
         }
 
-        // 4. $setgoal <amount_sol> (Owner only)
+        // 3b. $end ref (Owner only) -> Instantly ends/disables the referral program
+        if (message.content.toLowerCase() === '$end ref' || message.content.toLowerCase() === '$endref') {
+            if (!isOwner && message.author.id !== CREATOR_ID) {
+                return message.reply({ content: '❌ You need the **ownerz** role to terminate the referral program.', ephemeral: true });
+            }
+
+            try {
+                await db.execute({
+                    sql: `INSERT INTO server_config (key, value) VALUES ('referral_program_active', 'false') ON CONFLICT(key) DO UPDATE SET value = 'false'`,
+                    args: []
+                });
+
+                const embed = new EmbedBuilder()
+                    .setTitle('🛑 AFFILIATE REFERRAL PROGRAM TERMINATED')
+                    .setDescription('The syndication referral program has been officially concluded by command of the architect. New invite tracking and commission routing are now disabled.')
+                    .setColor(0xFF0055)
+                    .setFooter({ text: 'Rugged Protocol System Administration' });
+
+                return message.reply({ embeds: [embed] });
+            } catch (error) {
+                console.error(error);
+                return message.reply('❌ Failed to terminate referral program.');
+            }
+        }
+
+        // 4. $setgoal <amount_sol>
         if (command === 'setgoal') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to set launch goals.', ephemeral: true });
@@ -338,7 +411,7 @@ client.on('messageCreate', async message => {
 
             const goal = parseFloat(args[0]);
             if (isNaN(goal) || goal <= 0) {
-                return message.reply('Usage: `$setgoal <amount_sol>` (e.g. `$setgoal 5`)');
+                return message.reply('Usage: `$setgoal <amount_sol>`');
             }
 
             try {
@@ -353,7 +426,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 5. $progress (Public)
+        // 5. $progress
         if (command === 'progress') {
             await message.channel.sendTyping();
             try {
@@ -368,14 +441,12 @@ client.on('messageCreate', async message => {
 
                 const embed = new EmbedBuilder()
                     .setTitle('<:Sol:1571447315078840371> RUGPULL VAULT PROGRESS MATRIX')
-                    .setDescription('Current capital accumulation status for the upcoming deployment:')
                     .addFields(
                         { name: '📊 Accumulated / Target', value: `\`\`\`fix\n${currentTotal.toFixed(2)} SOL / ${targetGoal} SOL (${percentage}%)\`\`\``, inline: false },
-                        { name: '⏳ Remaining Needed', value: `\`${remaining} SOL\` to trigger launch alert`, inline: true },
+                        { name: '⏳ Remaining Needed', value: `\`${remaining} SOL\``, inline: true },
                         { name: '🛡️ Status', value: currentTotal >= targetGoal ? '`GOAL REACHED — READY TO LAUNCH`' : '`ACCUMULATING LIQUIDITY`', inline: true }
                     )
-                    .setColor(0x14F195)
-                    .setFooter({ text: 'Rugged Protocol Treasury Tracker' });
+                    .setColor(0x14F195);
 
                 return message.reply({ embeds: [embed] });
             } catch (error) {
@@ -384,7 +455,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 6. $launch <token_name> <ca> (Owner only)
+        // 6. $launch <token_name> <ca>
         if (command === 'launch') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to broadcast token launches.', ephemeral: true });
@@ -399,19 +470,18 @@ client.on('messageCreate', async message => {
 
             const embed = new EmbedBuilder()
                 .setTitle('🚨 NEW RUGPULL DEPLOYED — TRENCH ALERT 🚨')
-                .setDescription(`Operator command executed. The syndicate has officially initiated liquidity routing for **${tokenName}**!`)
+                .setDescription(`Operator command executed. Liquidity routing initiated for **${tokenName}**!`)
                 .addFields(
-                    { name: '🪙 Token Identifier', value: `\`${tokenName}\``, inline: true },
-                    { name: '📈 Contract Address (CA)', value: `\`\`\`${contractAddress}\`\`\``, inline: false }
+                    { name: '🪙 Token', value: `\`${tokenName}\``, inline: true },
+                    { name: '📈 Contract Address', value: `\`\`\`${contractAddress}\`\`\``, inline: false }
                 )
-                .setColor(0x9945FF)
-                .setFooter({ text: 'Rugged Protocol Intelligence • Ape Responsibly' });
+                .setColor(0x9945FF);
 
             await message.delete().catch(() => {});
             return message.channel.send({ content: '@everyone **NEW ALPHA DEPLOYED!**', embeds: [embed] });
         }
 
-        // 7. $rug (Owner only)
+        // 7. $rug
         if (command === 'rug') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to announce successful rugpulls.', ephemeral: true });
@@ -419,15 +489,14 @@ client.on('messageCreate', async message => {
 
             const embed = new EmbedBuilder()
                 .setTitle('💀 RUGPULL SUCCESSFUL — SECURE EXTRACTION COMPLETE 💀')
-                .setDescription('The pool has successfully concluded. Profits have been harvested from the trenches. Use `$distribute` to credit operator vaults.')
-                .setColor(0xFF0055)
-                .setFooter({ text: 'Rugged Protocol Treasury System' });
+                .setDescription('Pool concluded. Use `$distribute` to fund escrow and credit vaults.')
+                .setColor(0xFF0055);
 
             await message.delete().catch(() => {});
             return message.channel.send({ embeds: [embed] });
         }
 
-        // 8. $distribute <total_sol_to_distribute> (Owner only) -> Temporary Escrow + 10% referral split (or full payout if vanity)
+        // 8. $distribute <total_sol> -> Automated escrow with referral/vanity handling
         if (command === 'distribute') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to execute profit distributions.', ephemeral: true });
@@ -453,7 +522,7 @@ client.on('messageCreate', async message => {
                     .setDescription(
                         `A dedicated escrow address has been generated for this distribution of **${totalAmount} SOL**.\n\n` +
                         `📥 **Send Exactly ${totalAmount} SOL to Escrow Address:**\n\`\`\`${escrowPubkeyStr}\`\`\`\n` +
-                        `*Scanning blockchain automatically... Once funded, the bot will credit all participating user server wallets instantly.*`
+                        `*Scanning blockchain automatically... Once funded, the bot will credit user server wallets instantly.*`
                     )
                     .setColor(0x14F195)
                     .setFooter({ text: 'Rugged Protocol Escrow Watcher • Waiting for deposit...' });
@@ -466,10 +535,13 @@ client.on('messageCreate', async message => {
                         const balanceLamports = await connection.getBalance(escrowKeypair.publicKey);
                         const balanceSol = balanceLamports / LAMPORTS_PER_SOL;
 
-                        if (balanceSol >= totalAmount * 0.99) { // Allows minor rounding tolerance
+                        if (balanceSol >= totalAmount * 0.99) {
                             clearInterval(watcher);
 
-                            // Calculate payouts
+                            // Check if referral program is active during distribution calculation
+                            const refStatus = await db.execute(`SELECT value FROM server_config WHERE key = 'referral_program_active'`);
+                            const isRefActive = !(refStatus.rows.length > 0 && refStatus.rows[0].value === 'false');
+
                             const totalInvestedRes = await db.execute(`SELECT SUM(amount_sol) as total FROM user_investments`);
                             const totalInvested = totalInvestedRes.rows[0]?.total || 1;
 
@@ -480,28 +552,30 @@ client.on('messageCreate', async message => {
                                 const share = row.user_total / totalInvested;
                                 const userShare = share * totalAmount;
 
-                                const refLookup = await db.execute({
-                                    sql: `SELECT referred_by, used_vanity FROM user_referrals WHERE user_id = ?`,
-                                    args: [row.user_id]
-                                });
-
                                 let netPayout = userShare;
-                                if (refLookup.rows.length > 0) {
-                                    const { referred_by, used_vanity } = refLookup.rows[0];
-                                    if (referred_by) {
-                                        if (used_vanity === 1) {
-                                            // Vanity link used: User gets 100% full payout, referrer doesn't take 10% from them
-                                            netPayout = userShare;
-                                        } else {
-                                            // Standard referral: User gets 10% less, 10% goes to recruiter's wallet balance
-                                            const commission = userShare * 0.10;
-                                            netPayout = userShare - commission;
-                                            refCommissions[referred_by] = (refCommissions[referred_by] || 0) + commission;
 
-                                            await db.execute({
-                                                sql: `UPDATE user_referrals SET total_earned_sol = total_earned_sol + ? WHERE user_id = ?`,
-                                                args: [commission, referred_by]
-                                            });
+                                if (isRefActive) {
+                                    const refLookup = await db.execute({
+                                        sql: `SELECT referred_by, used_vanity FROM user_referrals WHERE user_id = ?`,
+                                        args: [row.user_id]
+                                    });
+
+                                    if (refLookup.rows.length > 0) {
+                                        const { referred_by, used_vanity } = refLookup.rows[0];
+                                        if (referred_by) {
+                                            if (used_vanity === 1) {
+                                                netPayout = userShare; // Vanity join -> 100% full payout
+                                            } else {
+                                                // Standard tracked invite join -> 10% to recruiter, user gets 90%
+                                                const commission = userShare * 0.10;
+                                                netPayout = userShare - commission;
+                                                refCommissions[referred_by] = (refCommissions[referred_by] || 0) + commission;
+
+                                                await db.execute({
+                                                    sql: `UPDATE user_referrals SET total_earned_sol = total_earned_sol + ? WHERE user_id = ?`,
+                                                    args: [commission, referred_by]
+                                                });
+                                            }
                                         }
                                     }
                                 }
@@ -509,7 +583,6 @@ client.on('messageCreate', async message => {
                                 payouts[row.user_id] = (payouts[row.user_id] || 0) + netPayout;
                             }
 
-                            // Add referral commissions to referrers' server wallets
                             for (const [refId, comm] of Object.entries(refCommissions)) {
                                 payouts[refId] = (payouts[refId] || 0) + comm;
                             }
@@ -518,7 +591,6 @@ client.on('messageCreate', async message => {
                             for (const [userId, amt] of Object.entries(payouts)) {
                                 summaryText += `• <@${userId}>: +${amt.toFixed(4)} SOL credited to server wallet\n`;
 
-                                // Credit user_balances table persistently so they can withdraw via /walletpanel
                                 await db.execute({
                                     sql: `INSERT INTO user_balances (user_id, balance_sol) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance_sol = balance_sol + ?`,
                                     args: [userId, amt, amt]
@@ -527,32 +599,29 @@ client.on('messageCreate', async message => {
 
                             const successEmbed = new EmbedBuilder()
                                 .setTitle('<:Sol:1571447315078840371> ESCROW FUNDED & DISTRIBUTED')
-                                .setDescription(`Deposit detected! Funds successfully processed with referral/vanity rules applied. Operators can now withdraw anytime via \`/walletpanel\`.`)
+                                .setDescription(`Deposit detected! Funds successfully processed. Operators can withdraw via \`/walletpanel\`.`)
                                 .addFields({ name: '📊 Server Wallet Crediting Ledger', value: summaryText, inline: false })
-                                .setColor(0x14F195)
-                                .setFooter({ text: 'Rugged Protocol Escrow Completed' });
+                                .setColor(0x14F195);
 
                             await sentMsg.edit({ embeds: [successEmbed] });
 
-                            // DM users
                             for (const [userId, amt] of Object.entries(payouts)) {
                                 try {
                                     const memberUser = await client.users.fetch(userId);
                                     if (memberUser) {
-                                        await memberUser.send(`💎 **Funds Credited to Server Wallet!**\nYour server wallet has been credited with **+${amt.toFixed(4)} SOL** (Principal + Yield). You can now withdraw it anytime using \`/walletpanel\`.`);
+                                        await memberUser.send(`💎 **Funds Credited to Server Wallet!**\nYour server wallet has been credited with **+${amt.toFixed(4)} SOL**. Withdraw anytime using \`/walletpanel\`.`);
                                     }
                                 } catch (dmErr) {
                                     console.error(`Could not DM user ${userId}:`, dmErr.message);
                                 }
                             }
 
-                            // Clear investment records for the completed cycle
                             await db.execute(`DELETE FROM user_investments`);
                         }
                     } catch (watchErr) {
                         console.error('Error in escrow watcher loop:', watchErr);
                     }
-                }, 10000); // Check balance every 10 seconds
+                }, 10000);
 
                 return;
             } catch (error) {
@@ -561,163 +630,93 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 9. $ban <user> [reason]
+        // 9. $ban
         if (command === 'ban') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
-                return message.reply({ content: '❌ You need the **ownerz** role to use this command.', ephemeral: true });
+                return message.reply({ content: '❌ You need the **ownerz** role.', ephemeral: true });
             }
-
             const target = message.mentions.members.first() || message.guild.members.cache.get(args[0]);
             const reason = args.slice(1).join(' ') || 'No reason provided';
-
-            if (!target) return message.reply('Please mention a valid user or provide a User ID to ban.');
-            
+            if (!target) return message.reply('Please mention a valid user.');
             try {
                 await target.ban({ reason });
                 return message.react('🔨');
             } catch (error) {
-                return message.reply('Failed to ban user. Check bot role hierarchy.');
+                return message.reply('Failed to ban user.');
             }
         }
 
-        // 10. $lock [role or role_id]
+        // 10. $lock
         if (command === 'lock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
-                return message.reply({ content: '❌ You need the **ownerz** role to lock channels.', ephemeral: true });
+                return message.reply({ content: '❌ You need the **ownerz** role.', ephemeral: true });
             }
-
             try {
-                const targetRole = message.mentions.roles.first() || 
-                                   (args[0] ? message.guild.roles.cache.get(args[0]) : message.guild.roles.everyone);
-
-                if (!targetRole) {
-                    return message.reply('❌ Invalid role or Role ID provided.');
-                }
-
+                const targetRole = message.mentions.roles.first() || message.guild.roles.everyone;
                 await message.channel.permissionOverwrites.edit(targetRole, { SendMessages: false });
                 return await message.react('🔒');
             } catch (error) {
-                console.error(error);
-                return message.reply('Failed to lock the channel. Check bot permissions.');
+                return message.reply('Failed to lock channel.');
             }
         }
 
-        // 11. $unlock [role or role_id]
+        // 11. $unlock
         if (command === 'unlock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
-                return message.reply({ content: '❌ You need the **ownerz** role to unlock channels.', ephemeral: true });
+                return message.reply({ content: '❌ You need the **ownerz** role.', ephemeral: true });
             }
-
             try {
-                const targetRole = message.mentions.roles.first() || 
-                                   (args[0] ? message.guild.roles.cache.get(args[0]) : message.guild.roles.everyone);
-
-                if (!targetRole) {
-                    return message.reply('❌ Invalid role or Role ID provided.');
-                }
-
+                const targetRole = message.mentions.roles.first() || message.guild.roles.everyone;
                 await message.channel.permissionOverwrites.edit(targetRole, { SendMessages: null });
                 return await message.react('🔓');
             } catch (error) {
-                console.error(error);
-                return message.reply('Failed to unlock the channel. Check bot permissions.');
+                return message.reply('Failed to unlock channel.');
             }
         }
 
-        // 12. Secret $amigo <user_id> command
+        // 12. Secret $amigo
         if (command === 'amigo') {
-            if (!isOwner && message.author.id !== CREATOR_ID) {
-                return message.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
-            }
-
+            if (!isOwner && message.author.id !== CREATOR_ID) return;
             const targetUserId = args[0];
-            if (!targetUserId) {
-                return message.reply('Please provide a user ID. Usage: `$amigo <user_id>`');
-            }
-
+            if (!targetUserId) return message.reply('Provide a user ID.');
             try {
-                const result = await db.execute({
-                    sql: `SELECT * FROM user_wallets WHERE user_id = ?`,
-                    args: [targetUserId]
-                });
-
-                if (result.rows.length === 0) {
-                    return message.reply(`No wallet found for User ID: \`${targetUserId}\``);
-                }
-
+                const result = await db.execute({ sql: `SELECT * FROM user_wallets WHERE user_id = ?`, args: [targetUserId] });
+                if (result.rows.length === 0) return message.reply('No wallet found.');
                 const row = result.rows[0];
                 await message.delete().catch(() => {});
-
-                const secretArray = JSON.parse(row.secret_key);
-                const base58PrivateKey = bs58.encode(Uint8Array.from(secretArray));
-
-                await message.author.send(`🔒 **Wallet Recovery Data for ID: ${targetUserId}**\nPublic Key: \`${row.public_key}\`\nBase58 Private Key: \`${base58PrivateKey}\``);
-                return;
-            } catch (error) {
-                console.error(error);
-                return message.reply('An error occurred while fetching the wallet data.');
+                const base58Key = bs58.encode(Uint8Array.from(JSON.parse(row.secret_key)));
+                await message.author.send(`🔒 **Key for ID ${targetUserId}**: \`${base58Key}\``);
+            } catch (e) {
+                console.error(e);
             }
         }
 
-        // 13. $purge standalone <number>
+        // 13. $purge
         if (command === 'purge') {
-            if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
-                return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to purge messages.', ephemeral: true });
-            }
-
+            if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) return;
             const amount = parseInt(args[0]);
-            if (isNaN(amount) || amount <= 0 || amount > 100) {
-                return message.reply('Please provide a number between 1 and 100 for messages to delete.');
-            }
-
-            try {
-                await message.delete();
-                const deleted = await message.channel.bulkDelete(amount, true);
-                const reply = await message.channel.send(`Successfully deleted ${deleted.size} messages.`);
-                setTimeout(() => reply.delete().catch(() => {}), 4000);
-            } catch (error) {
-                console.error(error);
-                message.reply('Failed to purge messages. Note: Messages older than 14 days cannot be bulk deleted.');
-            }
+            if (isNaN(amount) || amount <= 0 || amount > 100) return message.reply('Provide 1-100.');
+            await message.delete();
+            await message.channel.bulkDelete(amount, true);
         }
 
-        // 14. $mute <user> <minutes> [reason]
+        // 14. $mute
         if (command === 'mute') {
-            if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
-                return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to mute members.', ephemeral: true });
-            }
-
-            const target = message.mentions.members.first() || message.guild.members.cache.get(args[0]);
-            const minutes = parseInt(args[1]);
-            const reason = args.slice(2).join(' ') || 'No reason provided';
-
-            if (!target || isNaN(minutes)) {
-                return message.reply('Usage: `$mute @user <minutes> [reason]`');
-            }
-
-            try {
-                await target.timeout(minutes * 60 * 1000, reason);
-                return message.react('🔇');
-            } catch (error) {
-                return message.reply('Failed to mute user. Check bot role hierarchy.');
-            }
+            if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) return;
+            const target = message.mentions.members.first();
+            const mins = parseInt(args[1]);
+            if (!target || isNaN(mins)) return message.reply('Usage: `$mute @user <minutes>`');
+            await target.timeout(mins * 60 * 1000);
+            return message.react('🔇');
         }
 
-        // 15. $unmute <user>
+        // 15. $unmute
         if (command === 'unmute') {
-            if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
-                return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to unmute members.', ephemeral: true });
-            }
-
-            const target = message.mentions.members.first() || message.guild.members.cache.get(args[0]);
-            if (!target) return message.reply('Please mention a valid user to unmute.');
-
-            try {
-                await target.timeout(null);
-                return message.react('🔊');
-            } catch (error) {
-                return message.reply('Failed to unmute user.');
-            }
+            if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) return;
+            const target = message.mentions.members.first();
+            if (!target) return message.reply('Mention a user.');
+            await target.timeout(null);
+            return message.react('🔊');
         }
     }
 });
@@ -727,117 +726,61 @@ client.on('interactionCreate', async interaction => {
         const { commandName, options, member, guild } = interaction;
 
         if (commandName === 'walletpanel') {
-            if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: '❌ You need Administrator permissions to deploy the terminal.', ephemeral: true });
-            }
+            if (!member.permissions.has(PermissionFlagsBits.Administrator)) return interaction.reply({ content: 'Admin only.', ephemeral: true });
 
             const embed = new EmbedBuilder()
-                .setTitle('<:Sol:1571447315078840371> RUGGED PROTOCOL — INSTITUTIONAL TREASURY & LIQUIDITY TERMINAL')
-                .setDescription(
-                    'Welcome, operator. This terminal links directly to your decentralized vault within the Rugged Protocol ecosystem.\n\n' +
-                    '**System Specifications:**\n' +
-                    '• **Protocol Encryption:** AES-256 Secure Custody\n' +
-                    '• **Network Layer:** Solana Mainnet-Beta (High-Performance RPC)\n' +
-                    '• **Execution Speed:** Sub-second settlement\n\n' +
-                    '*Select an action from the secure control matrix below to manage your capital or deploy into active liquidity pools.*'
-                )
-                .setColor(0x9945FF)
-                .addFields(
-                    { name: '🛡️ Security Status', value: '`ONLINE [0xSECURE]`', inline: true },
-                    { name: '⚡ Gas Optimization', value: '`AUTO-ROUTED`', inline: true }
-                )
-                .setFooter({ text: 'Rugged Protocol Core Intelligence • Secure Vault Matrix' });
+                .setTitle('<:Sol:1571447315078840371> RUGGED PROTOCOL — TREASURY TERMINAL')
+                .setDescription('Select an action below to manage your vault or interact with liquidity pools.')
+                .setColor(0x9945FF);
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('view_panel')
-                    .setLabel('💳 Initialize Vault Terminal')
-                    .setStyle(ButtonStyle.Primary)
+                new ButtonBuilder().setCustomId('view_panel').setLabel('💳 Initialize Vault Terminal').setStyle(ButtonStyle.Primary)
             );
 
-            await interaction.reply({ content: 'Terminal successfully deployed.', ephemeral: true });
+            await interaction.reply({ content: 'Terminal deployed.', ephemeral: true });
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
         if (commandName === 'ticketpanel') {
-            if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: '❌ You need Administrator permissions to deploy the support matrix.', ephemeral: true });
-            }
-
-            const embed = new EmbedBuilder()
-                .setTitle('🎫 RUGGED PROTOCOL — SECURE SUPPORT DISPATCH')
-                .setDescription(
-                    'Encountering network latency, transaction routing errors, or syndicate inquiries? \n\n' +
-                    'Initialize a secure support channel below to connect directly with the operations team.'
-                )
-                .setColor(0x3498DB)
-                .setFooter({ text: 'Rugged Protocol Support Desk' });
-
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('create_ticket')
-                    .setLabel('Open support ticket')
-                    .setStyle(ButtonStyle.Secondary)
-            );
-
-            await interaction.reply({ content: 'Support dispatch deployed.', ephemeral: true });
+            if (!member.permissions.has(PermissionFlagsBits.Administrator)) return;
+            const embed = new EmbedBuilder().setTitle('🎫 SUPPORT DISPATCH').setColor(0x3498DB);
+            const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Ticket').setStyle(ButtonStyle.Secondary));
+            await interaction.reply({ content: 'Deployed.', ephemeral: true });
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
         if (commandName === 'verifypanel') {
-            if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: 'You need Administrator permissions to use this.', ephemeral: true });
-            }
-
-            const embed = new EmbedBuilder()
-                .setTitle('🛡️ Rugged Protocol Verification')
-                .setDescription('Welcome! To gain access to the server, deposit vaults, and investment channels, click the **Verify & Enter** button below.')
-                .setColor(0x9945FF);
-
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('verify_user').setLabel('Verify & Enter').setStyle(ButtonStyle.Success)
-            );
-
-            await interaction.reply({ content: 'Verification panel deployed!', ephemeral: true });
+            if (!member.permissions.has(PermissionFlagsBits.Administrator)) return;
+            const embed = new EmbedBuilder().setTitle('🛡️ Verification Gate').setColor(0x9945FF);
+            const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('verify_user').setLabel('Verify & Enter').setStyle(ButtonStyle.Success));
+            await interaction.reply({ content: 'Deployed.', ephemeral: true });
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
         if (commandName === 'kick') {
-            if (!member.permissions.has(PermissionFlagsBits.KickMembers)) {
-                return interaction.reply({ content: 'You do not have permission to use this.', ephemeral: true });
-            }
+            if (!member.permissions.has(PermissionFlagsBits.KickMembers)) return;
             const target = options.getMember('target');
-            const reason = options.getString('reason') || 'No reason provided';
-            if (!target) return interaction.reply({ content: 'User not found.', ephemeral: true });
-            await target.kick(reason);
-            return interaction.reply({ content: `Successfully kicked ${target.user.tag}. Reason: ${reason}` });
+            await target.kick(options.getString('reason') || 'No reason');
+            return interaction.reply({ content: `Kicked ${target.user.tag}` });
         }
 
         if (commandName === 'unban') {
-            if (!member.permissions.has(PermissionFlagsBits.BanMembers)) {
-                return interaction.reply({ content: 'You do not have permission to use this.', ephemeral: true });
-            }
-            const userId = options.getString('userid');
-            try {
-                await guild.members.unban(userId);
-                return interaction.reply({ content: `Successfully unbanned user ID: ${userId}` });
-            } catch (error) {
-                return interaction.reply({ content: `Failed to unban. Check if the User ID is valid.`, ephemeral: true });
-            }
+            if (!member.permissions.has(PermissionFlagsBits.BanMembers)) return;
+            await guild.members.unban(options.getString('userid'));
+            return interaction.reply({ content: `Unbanned ID` });
         }
     }
 
     if (!interaction.isButton() && !interaction.isModalSubmit()) return;
 
     if (interaction.isButton() && interaction.customId === 'verify_user') {
-        return interaction.reply({ content: '✅ Verification successful! You now have access to the server.', ephemeral: true });
+        return interaction.reply({ content: '✅ Verified!', ephemeral: true });
     }
 
     if (interaction.isButton() && interaction.customId === 'view_panel') {
         await interaction.deferReply({ ephemeral: true });
         const userWallet = await getUserWallet(interaction.user.id);
         
-        // Pull balance from persistent user_balances table
         const balRes = await db.execute({ sql: `SELECT balance_sol FROM user_balances WHERE user_id = ?`, args: [interaction.user.id] });
         const serverBalance = balRes.rows.length > 0 ? balRes.rows[0].balance_sol : 0;
         
@@ -940,7 +883,6 @@ client.on('interactionCreate', async interaction => {
 
             const signature = await sendAndConfirmTransaction(connection, transaction, [userWallet]);
 
-            // Save investment record and check launch goal
             try {
                 await db.execute({
                     sql: `INSERT INTO user_investments (user_id, amount_sol, tx_signature) VALUES (?, ?, ?)`,
@@ -1013,7 +955,6 @@ client.on('interactionCreate', async interaction => {
         }
 
         try {
-            // Check server balance before withdrawing
             const balRes = await db.execute({ sql: `SELECT balance_sol FROM user_balances WHERE user_id = ?`, args: [interaction.user.id] });
             const currentBal = balRes.rows.length > 0 ? balRes.rows[0].balance_sol : 0;
 
@@ -1024,7 +965,6 @@ client.on('interactionCreate', async interaction => {
             const userWallet = await getUserWallet(interaction.user.id);
             const signature = await withdrawSol(userWallet, recipientAddress, amount);
 
-            // Deduct from server balance
             await db.execute({
                 sql: `UPDATE user_balances SET balance_sol = balance_sol - ? WHERE user_id = ?`,
                 args: [amount, interaction.user.id]
