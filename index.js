@@ -6,7 +6,7 @@ const {
 } = require('discord.js');
 require('dotenv').config();
 const { getUserWallet, getSolBalance, withdrawSol, connection } = require('./utils');
-const { Transaction, SystemProgram, PublicKey, sendAndConfirmTransaction, LAMPORTS_PER_SOL } = require('@solana/web3.js');
+const { Keypair, Transaction, SystemProgram, PublicKey, sendAndConfirmTransaction, LAMPORTS_PER_SOL } = require('@solana/web3.js');
 const { createClient } = require('@libsql/client');
 const bs58 = require('bs58'); // Required for Base58 private key encoding
 const { GoogleGenAI } = require('@google/genai'); // Required for RugBot AI functionality
@@ -72,6 +72,13 @@ client.once('ready', async () => {
                 user_id TEXT PRIMARY KEY,
                 referred_by TEXT,
                 total_earned_sol REAL DEFAULT 0
+            )
+        `);
+        // New table to track user server wallet balances persistently
+        await db.execute(`
+            CREATE TABLE IF NOT EXISTS user_balances (
+                user_id TEXT PRIMARY KEY,
+                balance_sol REAL DEFAULT 0
             )
         `);
     } catch (e) {
@@ -417,7 +424,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        // 8. $distribute <total_sol_to_distribute> (Owner only) -> Gives deposit address prompt & distributes capital/yields + referral cut + DMs
+        // 8. $distribute <total_sol_to_distribute> (Owner only) -> Generates a dedicated temporary escrow wallet & watches for funding
         if (command === 'distribute') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to execute profit distributions.', ephemeral: true });
@@ -425,7 +432,7 @@ client.on('messageCreate', async message => {
 
             const totalAmount = parseFloat(args[0]);
             if (isNaN(totalAmount) || totalAmount <= 0) {
-                return message.reply('Usage: `$distribute <total_sol>` (e.g. `$distribute 0.002` to return capital + profits)');
+                return message.reply('Usage: `$distribute <total_sol>` (e.g. `$distribute 0.002`)');
             }
 
             try {
@@ -434,83 +441,113 @@ client.on('messageCreate', async message => {
                     return message.reply('❌ No investment records found to distribute funds against.');
                 }
 
-                const totalInvestedRes = await db.execute(`SELECT SUM(amount_sol) as total FROM user_investments`);
-                const totalInvested = totalInvestedRes.rows[0]?.total || 1;
-
-                let payouts = {};
-                let refCommissions = {};
-
-                for (const row of invSummary.rows) {
-                    const share = row.user_total / totalInvested;
-                    const userShare = share * totalAmount; // Principal return + yield proportion
-
-                    const refLookup = await db.execute({
-                        sql: `SELECT referred_by FROM user_referrals WHERE user_id = ?`,
-                        args: [row.user_id]
-                    });
-
-                    const referrerId = refLookup.rows.length > 0 ? refLookup.rows[0].referred_by : null;
-
-                    let netPayout = userShare;
-                    if (referrerId) {
-                        const refCommission = userShare * 0.15; // 15% referral cut
-                        netPayout = userShare - refCommission;
-                        refCommissions[referrerId] = (refCommissions[referrerId] || 0) + refCommission;
-
-                        await db.execute({
-                            sql: `UPDATE user_referrals SET total_earned_sol = total_earned_sol + ? WHERE user_id = ?`,
-                            args: [refCommission, referrerId]
-                        });
-                    }
-
-                    payouts[row.user_id] = (payouts[row.user_id] || 0) + netPayout;
-                }
-
-                for (const [refId, comm] of Object.entries(refCommissions)) {
-                    payouts[refId] = (payouts[refId] || 0) + comm;
-                }
-
-                let summaryText = '';
-                for (const [userId, amt] of Object.entries(payouts)) {
-                    summaryText += `• <@${userId}>: +${amt.toFixed(4)} SOL credited to server wallet\n`;
-                }
-
-                const mainWalletPubkey = process.env.MAIN_WALLET_PUBKEY;
+                // Generate a fresh, temporary escrow keypair for this distribution session
+                const escrowKeypair = Keypair.generate();
+                const escrowPubkeyStr = escrowKeypair.publicKey.toBase58();
+                const escrowSecretJson = JSON.stringify(Array.from(escrowKeypair.secretKey));
 
                 const embed = new EmbedBuilder()
-                    .setTitle('<:Sol:1571447315078840371> FUND DISTRIBUTION GATEWAY')
+                    .setTitle('<:Sol:1571447315078840371> AUTOMATED ESCROW DISTRIBUTION GATEWAY')
                     .setDescription(
-                        `To execute this distribution of **${totalAmount} SOL** (Principal + Yield), please fund the pool treasury below.\n\n` +
-                        `📥 **Send ${totalAmount} SOL to Main Vault:**\n\`\`\`${mainWalletPubkey}\`\`\`\n` +
-                        `Once funded, the following server wallets have been credited:`
+                        `A dedicated escrow address has been generated for this distribution of **${totalAmount} SOL**.\n\n` +
+                        `📥 **Send Exactly ${totalAmount} SOL to Escrow Address:**\n\`\`\`${escrowPubkeyStr}\`\`\`\n` +
+                        `*Scanning blockchain automatically... Once funded, the bot will credit all participating user server wallets instantly.*`
                     )
-                    .addFields({ name: '📊 Server Wallet Crediting Ledger', value: summaryText || 'No accounts found.', inline: false })
                     .setColor(0x14F195)
-                    .setFooter({ text: 'Rugged Protocol Automated Custody System' });
+                    .setFooter({ text: 'Rugged Protocol Escrow Watcher • Waiting for deposit...' });
 
-                // DM users notifying them of their credited server wallet balance
-                for (const [userId, amt] of Object.entries(payouts)) {
+                const sentMsg = await message.reply({ embeds: [embed] });
+
+                // Background interval to watch the escrow balance until funded
+                const watcher = setInterval(async () => {
                     try {
-                        const memberUser = await client.users.fetch(userId);
-                        if (memberUser) {
-                            let dmMsg = `💎 **Funds Credited to Server Wallet!**\nYour server wallet has been credited with **+${amt.toFixed(4)} SOL** (Principal Return + Yield). You can now use the \`/walletpanel\` to withdraw it anytime.`;
-                            if (refCommissions[userId]) {
-                                dmMsg += `\n*(Includes +${refCommissions[userId].toFixed(4)} SOL affiliate commission from recruited operators!)*`;
+                        const balanceLamports = await connection.getBalance(escrowKeypair.publicKey);
+                        const balanceSol = balanceLamports / LAMPORTS_PER_SOL;
+
+                        if (balanceSol >= totalAmount * 0.99) { // Allows minor rounding tolerance
+                            clearInterval(watcher);
+
+                            // Calculate payouts
+                            const totalInvestedRes = await db.execute(`SELECT SUM(amount_sol) as total FROM user_investments`);
+                            const totalInvested = totalInvestedRes.rows[0]?.total || 1;
+
+                            let payouts = {};
+                            let refCommissions = {};
+
+                            for (const row of invSummary.rows) {
+                                const share = row.user_total / totalInvested;
+                                const userShare = share * totalAmount;
+
+                                const refLookup = await db.execute({
+                                    sql: `SELECT referred_by FROM user_referrals WHERE user_id = ?`,
+                                    args: [row.user_id]
+                                });
+
+                                const referrerId = refLookup.rows.length > 0 ? refLookup.rows[0].referred_by : null;
+
+                                let netPayout = userShare;
+                                if (referrerId) {
+                                    const refCommission = userShare * 0.15;
+                                    netPayout = userShare - refCommission;
+                                    refCommissions[referrerId] = (refCommissions[referrerId] || 0) + refCommission;
+
+                                    await db.execute({
+                                        sql: `UPDATE user_referrals SET total_earned_sol = total_earned_sol + ? WHERE user_id = ?`,
+                                        args: [refCommission, referrerId]
+                                    });
+                                }
+
+                                payouts[row.user_id] = (payouts[row.user_id] || 0) + netPayout;
                             }
-                            await memberUser.send(dmMsg);
+
+                            for (const [refId, comm] of Object.entries(refCommissions)) {
+                                payouts[refId] = (payouts[refId] || 0) + comm;
+                            }
+
+                            let summaryText = '';
+                            for (const [userId, amt] of Object.entries(payouts)) {
+                                summaryText += `• <@${userId}>: +${amt.toFixed(4)} SOL credited to server wallet\n`;
+
+                                // Credit user_balances table persistently so they can withdraw via /walletpanel
+                                await db.execute({
+                                    sql: `INSERT INTO user_balances (user_id, balance_sol) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance_sol = balance_sol + ?`,
+                                    args: [userId, amt, amt]
+                                });
+                            }
+
+                            const successEmbed = new EmbedBuilder()
+                                .setTitle('<:Sol:1571447315078840371> ESCROW FUNDED & DISTRIBUTED')
+                                .setDescription(`Deposit detected! Funds successfully processed and credited to server wallets. Operators can now withdraw anytime via \`/walletpanel\`.`)
+                                .addFields({ name: '📊 Server Wallet Crediting Ledger', value: summaryText, inline: false })
+                                .setColor(0x14F195)
+                                .setFooter({ text: 'Rugged Protocol Escrow Completed' });
+
+                            await sentMsg.edit({ embeds: [successEmbed] });
+
+                            // DM users
+                            for (const [userId, amt] of Object.entries(payouts)) {
+                                try {
+                                    const memberUser = await client.users.fetch(userId);
+                                    if (memberUser) {
+                                        await memberUser.send(`💎 **Funds Credited to Server Wallet!**\nYour server wallet has been credited with **+${amt.toFixed(4)} SOL** (Principal + Yield). You can now withdraw it anytime using \`/walletpanel\`.`);
+                                    }
+                                } catch (dmErr) {
+                                    console.error(`Could not DM user ${userId}:`, dmErr.message);
+                                }
+                            }
+
+                            // Clear investment records for the completed cycle
+                            await db.execute(`DELETE FROM user_investments`);
                         }
-                    } catch (dmErr) {
-                        console.error(`Could not DM user ${userId}:`, dmErr.message);
+                    } catch (watchErr) {
+                        console.error('Error in escrow watcher loop:', watchErr);
                     }
-                }
+                }, 10000); // Check balance every 10 seconds
 
-                // Clear investment records for the completed cycle
-                await db.execute(`DELETE FROM user_investments`);
-
-                return message.reply({ embeds: [embed] });
+                return;
             } catch (error) {
                 console.error(error);
-                return message.reply('❌ Failed to process distribution gateway.');
+                return message.reply('❌ Failed to initialize escrow distribution gateway.');
             }
         }
 
