@@ -10,7 +10,6 @@ const { Transaction, SystemProgram, PublicKey, sendAndConfirmTransaction, LAMPOR
 const { createClient } = require('@libsql/client');
 const bs58 = require('bs58'); // Required for Base58 private key encoding
 const { GoogleGenAI } = require('@google/genai'); // Required for RugBot AI functionality
-const { createCanvas } = require('canvas'); // Required for image generation card renders
 
 // Connect to Turso for direct secret key lookup & user investment history
 const db = createClient({
@@ -37,92 +36,6 @@ async function getSolUsdPrice() {
         console.error('Error fetching live SOL price:', error);
         return 0;
     }
-}
-
-// --- Image Card Generator: Balance ---
-async function generateBalanceCard(username, balance, usdValue, address) {
-    const canvas = createCanvas(700, 300);
-    const ctx = canvas.getContext('2d');
-
-    // Background (Dark mode terminal theme)
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, 700, 300);
-
-    // Accent border/glow
-    ctx.strokeStyle = '#14F195';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(15, 15, 670, 270);
-
-    // Header Title
-    ctx.fillStyle = '#14F195';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillText('⚡ RUGGED PROTOCOL — VAULT BALANCE', 40, 55);
-
-    // User tag / Operator
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '14px sans-serif';
-    ctx.fillText(`OPERATOR: ${username}`, 40, 85);
-
-    // Balance amounts
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 36px sans-serif';
-    ctx.fillText(`${balance} SOL`, 40, 150);
-
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillText(`(~$${usdValue} USD)`, 40, 185);
-
-    // Address footer box
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(40, 215, 620, 45);
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '12px monospace';
-    ctx.fillText(`ADDRESS: ${address}`, 55, 243);
-
-    return canvas.toBuffer('image/png');
-}
-
-// --- Image Card Generator: Stats ---
-async function generateStatsCard(username, totalSol, totalUsd, txCount) {
-    const canvas = createCanvas(700, 300);
-    const ctx = canvas.getContext('2d');
-
-    // Background
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, 700, 300);
-
-    // Accent border
-    ctx.strokeStyle = '#9945FF';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(15, 15, 670, 270);
-
-    // Header Title
-    ctx.fillStyle = '#9945FF';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillText('🚀 RUGGED PROTOCOL — CAPITAL STATS', 40, 55);
-
-    // User tag
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '14px sans-serif';
-    ctx.fillText(`OPERATOR: ${username}`, 40, 85);
-
-    // Stats Deployed Capital
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 32px sans-serif';
-    ctx.fillText(`${totalSol} SOL`, 40, 150);
-
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = 'bold 18px sans-serif';
-    ctx.fillText(`(~$${totalUsd} USD deployed across ${txCount} pools)`, 40, 185);
-
-    // Status footer box
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(40, 215, 620, 45);
-    ctx.fillStyle = '#14F195';
-    ctx.font = 'bold 13px sans-serif';
-    ctx.fillText(`STATUS: ACTIVE POSITION [SECURE VAULT]`, 55, 243);
-
-    return canvas.toBuffer('image/png');
 }
 
 const client = new Client({
@@ -284,7 +197,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 2. $bal command: View user's available wallet balance as an Image Card
+        // 2. $bal command: View user's available wallet balance in SOL and USD
         if (command === 'bal') {
             await message.channel.sendTyping();
             try {
@@ -292,19 +205,26 @@ client.on('messageCreate', async message => {
                 const balance = await getSolBalance(userWallet.publicKey.toBase58());
                 const solPrice = await getSolUsdPrice();
                 const usdValue = (balance * solPrice).toFixed(2);
+                const balanceDisplay = `${balance} SOL (~$${usdValue} USD)`;
 
-                const buffer = await generateBalanceCard(message.author.tag, balance, usdValue, userWallet.publicKey.toBase58());
+                const embed = new EmbedBuilder()
+                    .setTitle('<:Sol:1571447315078840371> VAULT BALANCE MATRIX')
+                    .setDescription(`Operator <@${message.author.id}>, here is your liquid balance across the Solana ledger:`)
+                    .addFields(
+                        { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
+                        { name: '💰 Available Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true }
+                    )
+                    .setColor(0x14F195)
+                    .setFooter({ text: 'Rugged Protocol Treasury System' });
 
-                return message.reply({ 
-                    files: [{ attachment: buffer, name: 'balance-card.png' }] 
-                });
+                return message.reply({ embeds: [embed] });
             } catch (error) {
                 console.error(error);
-                return message.reply('❌ Failed to generate balance image card.');
+                return message.reply('❌ Failed to retrieve balance metrics from the ledger.');
             }
         }
 
-        // 3. $stats command: View user's total investments as an Image Card
+        // 3. $stats command: View user's total investments (SOL & USD)
         if (command === 'stats') {
             await message.channel.sendTyping();
             try {
@@ -318,14 +238,21 @@ client.on('messageCreate', async message => {
                 const solPrice = await getSolUsdPrice();
                 const totalUsd = (totalSol * solPrice).toFixed(2);
 
-                const buffer = await generateStatsCard(message.author.tag, totalSol, totalUsd, txCount);
+                const embed = new EmbedBuilder()
+                    .setTitle('<:Sol:1571447315078840371> OPERATOR CAPITAL STATS')
+                    .setDescription(`Cumulative investment performance metrics for <@${message.author.id}>:`)
+                    .addFields(
+                        { name: '🚀 Total Deployed Capital', value: `\`\`\`fix\n${totalSol} SOL (~$${totalUsd} USD)\`\`\``, inline: false },
+                        { name: '📊 Total Rugpull Pools Entered', value: `\`${txCount} Deployments\``, inline: true },
+                        { name: '🛡️ Status', value: '`ACTIVE POSITION`', inline: true }
+                    )
+                    .setColor(0x9945FF)
+                    .setFooter({ text: 'Rugged Protocol Intelligence • On-Chain Ledger' });
 
-                return message.reply({ 
-                    files: [{ attachment: buffer, name: 'stats-card.png' }] 
-                });
+                return message.reply({ embeds: [embed] });
             } catch (error) {
                 console.error(error);
-                return message.reply('❌ Failed to generate stats image card.');
+                return message.reply('❌ Failed to query investment statistics.');
             }
         }
 
