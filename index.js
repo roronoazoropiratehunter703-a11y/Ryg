@@ -146,10 +146,11 @@ client.on('messageCreate', async message => {
                 } else {
                     await thinkingMsg.edit(aiReply);
                 }
-            }     } catch (error) {
+            }         } catch (error) {
         console.error('DETAILED GEMINI ERROR:', error);
         await thinkingMsg.edit(`⚠️ *Error: ${error.message || 'Unknown neural fault'}*`);
     }
+
 
 
         // 2. $ban <user> [reason] (Restricted to ownerz role only)
