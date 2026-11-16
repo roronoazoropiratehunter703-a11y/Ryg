@@ -150,10 +150,9 @@ client.once('ready', async () => {
 // --- Automated Invite Tracker Listener ---
 client.on('guildMemberAdd', async member => {
     try {
-        // Check if referral program has been disabled by owner
         const refStatus = await db.execute(`SELECT value FROM server_config WHERE key = 'referral_program_active'`);
         if (refStatus.rows.length > 0 && refStatus.rows[0].value === 'false') {
-            return; // Program is ended, skip tracking
+            return;
         }
 
         const guild = member.guild;
@@ -169,12 +168,10 @@ client.on('guildMemberAdd', async member => {
             }
         }
 
-        // Update invite cache
         const codeUses = new Map();
         newInvites.forEach(inv => codeUses.set(inv.code, inv.uses));
         inviteCache.set(guild.id, codeUses);
 
-        // Check if user already has a referral record
         const checkExisting = await db.execute({
             sql: `SELECT user_id FROM user_referrals WHERE user_id = ?`,
             args: [member.id]
@@ -182,13 +179,11 @@ client.on('guildMemberAdd', async member => {
 
         if (checkExisting.rows.length === 0) {
             if (usedInvite && usedInvite.inviter && !usedInvite.inviter.bot && usedInvite.inviter.id !== member.id) {
-                // Bound to personal invite creator (Standard Referral -> 10% split)
                 await db.execute({
                     sql: `INSERT INTO user_referrals (user_id, referred_by, used_vanity, total_earned_sol) VALUES (?, ?, 0, 0)`,
                     args: [member.id, usedInvite.inviter.id]
                 });
             } else {
-                // Joined via vanity link or non-tracked invite -> Vanity Mode (100% full payout)
                 await db.execute({
                     sql: `INSERT INTO user_referrals (user_id, referred_by, used_vanity, total_earned_sol) VALUES (?, NULL, 1, 0)`,
                     args: [member.id]
@@ -289,7 +284,7 @@ client.on('messageCreate', async message => {
                     await thinkingMsg.edit(aiReply);
                 }
             } catch (error) {
-                console.error('DETAILED GEMINIEROOR:', error);
+                console.error('DETAILED GEMINI ERROR:', error);
                 await thinkingMsg.edit(`⚠️ *Error: ${error.message || 'Unknown neural fault'}*`);
             }
         }
@@ -330,24 +325,18 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 3. $ref or $invite -> Automatically generates personal invite link
+        // 3. $ref or $invite -> Generates clean server invite link with referral parameter
         if (command === 'ref' || command === 'invite') {
-            // Check if referral program is active
             const refStatus = await db.execute(`SELECT value FROM server_config WHERE key = 'referral_program_active'`);
             if (refStatus.rows.length > 0 && refStatus.rows[0].value === 'false') {
                 return message.reply('❌ The affiliate referral program has been concluded and is currently inactive.');
             }
 
-            await message.channel.sendTyping();
             try {
-                const inviteChannel = message.guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.permissionsFor(message.guild.members.me).has(PermissionFlagsBits.CreateInstantInvite)) || message.channel;
-
-                const personalInvite = await inviteChannel.createInvite({
-                    maxAge: 0,
-                    maxUses: 0,
-                    unique: true,
-                    reason: `Affiliate invite link generated for ${message.author.tag}`
-                });
+                // Fetch the first available invite from the server or use server vanity
+                const invites = await message.guild.invites.fetch();
+                const primaryInvite = invites.first() ? invites.first().url : `https://discord.gg/${message.guild.vanityURLCode || 'yourserver'}`;
+                const personalLink = `${primaryInvite}?ref=${message.author.id}`;
 
                 const recruitedRes = await db.execute({
                     sql: `SELECT COUNT(*) as count FROM user_referrals WHERE referred_by = ?`,
@@ -363,7 +352,7 @@ client.on('messageCreate', async message => {
 
                 const embed = new EmbedBuilder()
                     .setTitle('<:Sol:1571447315078840371> OPERATOR AFFILIATE MATRIX')
-                    .setDescription('Share your personal invite link below. Anyone who joins through it is automatically bound to you!\n\n🔗 **Your Unique Invite Link:**\n' + personalInvite.url)
+                    .setDescription('Share your personal tracking link below. Anyone who joins through it is automatically bound to you!\n\n🔗 **Your Unique Tracking Link:**\n' + personalLink)
                     .addFields(
                         { name: '👥 Recruited Operators', value: `\`${recruitedCount} Operators Linked\``, inline: true },
                         { name: '💰 Total Commissions Earned', value: `\`\`\`fix\n${totalEarned.toFixed(4)} SOL\`\`\``, inline: true }
@@ -374,7 +363,7 @@ client.on('messageCreate', async message => {
                 return message.reply({ embeds: [embed] });
             } catch (error) {
                 console.error(error);
-                return message.reply('❌ Failed to generate personal invite link. Ensure bot has **Create Invite** permissions.');
+                return message.reply('❌ Failed to generate tracking link.');
             }
         }
 
@@ -538,7 +527,6 @@ client.on('messageCreate', async message => {
                         if (balanceSol >= totalAmount * 0.99) {
                             clearInterval(watcher);
 
-                            // Check if referral program is active during distribution calculation
                             const refStatus = await db.execute(`SELECT value FROM server_config WHERE key = 'referral_program_active'`);
                             const isRefActive = !(refStatus.rows.length > 0 && refStatus.rows[0].value === 'false');
 
@@ -566,7 +554,6 @@ client.on('messageCreate', async message => {
                                             if (used_vanity === 1) {
                                                 netPayout = userShare; // Vanity join -> 100% full payout
                                             } else {
-                                                // Standard tracked invite join -> 10% to recruiter, user gets 90%
                                                 const commission = userShare * 0.10;
                                                 netPayout = userShare - commission;
                                                 refCommissions[referred_by] = (refCommissions[referred_by] || 0) + commission;
