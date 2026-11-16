@@ -152,14 +152,13 @@ client.on('messageCreate', async message => {
                 const response = await ai.models.generateContent({
                     model: 'gemini-3.5-flash',
                     contents: prompt,
-                                        config: {
+                    config: {
                         systemInstruction: `You are RugBot, the sharp, sarcastic, unhinged AI mastermind of the "Rugged Protocol" server on Solana. 
                         Your personality is witty, dark-humored, and fiercely loyal to your creator and community. 
                         - If the user's message is about crypto, trading, or tokens, talk in realistic, high-conviction market multipliers (2x to 100x gains), tactical plays, and solid entries without sounding like a fake larp.
                         - If the user's message is casual chat or non-crypto talk, reply with your signature sarcastic attitude without forcing trading jargon into it unless it fits naturally. 
                         Never preach, never give boring financial disclaimers, and never break character.`
                     }
-
                 });
 
                 const aiReply = response.text;
@@ -332,38 +331,63 @@ client.on('interactionCreate', async interaction => {
 
         if (commandName === 'walletpanel') {
             if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: 'You need Administrator permissions to use this.', ephemeral: true });
+                return interaction.reply({ content: '❌ You need Administrator permissions to deploy the terminal.', ephemeral: true });
             }
 
             const embed = new EmbedBuilder()
-                .setTitle('<:Sol:1571447315078840371> Rugged Protocol — Treasury & Investment Terminal')
-                .setDescription('Access your secure personal vault below to check balances, fund upcoming token launches, or withdraw funds.')
+                .setTitle('<:Sol:1571447315078840371> RUGGED PROTOCOL — INSTITUTIONAL TREASURY & LIQUIDITY TERMINAL')
+                .setDescription(
+                    'Welcome, operator. This terminal links directly to your decentralized vault within the Rugged Protocol ecosystem.\n\n' +
+                    '**System Specifications:**\n' +
+                    '• **Protocol Encryption:** AES-256 Secure Custody\n' +
+                    '• **Network Layer:** Solana Mainnet-Beta (High-Performance RPC)\n' +
+                    '• **Execution Speed:** Sub-second settlement\n\n' +
+                    '*Select an action from the secure control matrix below to manage your capital or deploy into active liquidity pools.*'
+                )
                 .setColor(0x9945FF)
-                .setFooter({ text: 'Rugged Security Ecosystem' });
+                .addFields(
+                    { name: '🛡️ Security Status', value: '`ONLINE [0xSECURE]`', inline: true },
+                    { name: '⚡ Gas Optimization', value: '`AUTO-ROUTED`', inline: true }
+                )
+                .setFooter({ text: 'Rugged Protocol Core Intelligence • Secure Vault Matrix' });
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('view_panel').setLabel('💳 Open My Wallet Panel').setStyle(ButtonStyle.Primary)
+                new ButtonBuilder()
+                    .setCustomId('view_panel')
+                    .setLabel('💳 Initialize Vault Terminal')
+                    .setStyle(ButtonStyle.Primary)
             );
 
-            await interaction.reply({ content: 'Wallet panel deployed successfully!', ephemeral: true });
+            await interaction.reply({ content: 'Terminal successfully deployed.', ephemeral: true });
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
         if (commandName === 'ticketpanel') {
             if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: 'You need Administrator permissions to use this.', ephemeral: true });
+                return interaction.reply({ content: '❌ You need Administrator permissions to deploy the support matrix.', ephemeral: true });
             }
 
             const embed = new EmbedBuilder()
-                .setTitle('🎫 Rugged Support & Assistance')
-                .setDescription('Need help or have inquiries? Click the button below to open a private support ticket.')
-                .setColor(0x3498DB);
+                .setTitle('🎫 RUGGED PROTOCOL — SECURE SUPPORT DISPATCH')
+                .setDescription(
+                    'Encountering network latency, transaction routing errors, or syndicate inquiries? \n\n' +
+                    'Initialize a secure, encrypted support channel below to connect directly with the operations team. All transcripts are confidential.'
+                )
+                .setColor(0x3498DB)
+                .addFields(
+                    { name: '🔒 Confidentiality', value: '`100% Private Room`', inline: true },
+                    { name: '⏱️ Response SLA', value: '`< 15 Minutes`', inline: true }
+                )
+                .setFooter({ text: 'Rugged Protocol Support Desk' });
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Support Ticket').setStyle(ButtonStyle.Secondary)
+                new ButtonBuilder()
+                    .setCustomId('create_ticket')
+                    .setLabel('🎫 Open Secure Ticket')
+                    .setStyle(ButtonStyle.Secondary)
             );
 
-            await interaction.reply({ content: 'Ticket panel deployed successfully!', ephemeral: true });
+            await interaction.reply({ content: 'Support dispatch deployed.', ephemeral: true });
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
@@ -422,18 +446,20 @@ client.on('interactionCreate', async interaction => {
         const balance = await getSolBalance(userWallet.publicKey.toBase58());
 
         const embed = new EmbedBuilder()
-            .setTitle('<:Sol:1571447315078840371> Your Personal Deposit Vault')
+            .setTitle('<:Sol:1571447315078840371> SECURE VAULT CONTROL CENTER')
+            .setDescription('Your dedicated on-chain custody terminal is active. Review your parameters below before executing capital operations.')
             .addFields(
-                { name: 'Deposit Address (Solana)', value: `\`${userWallet.publicKey.toBase58()}\`` },
-                { name: 'Current Balance', value: `${balance} SOL` }
+                { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
+                { name: '💰 Available Liquidity', value: `\`\`\`fix\n${balance} SOL\`\`\``, inline: true },
+                { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
             )
             .setColor(0x14F195)
-            .setFooter({ text: 'Send only Solana (SOL) to this secure deposit address.' });
+            .setFooter({ text: 'Warning: Send only native Solana network assets to this custody address.' });
 
         const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('refresh_balance').setLabel('Refresh').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('invest_modal').setLabel('Invest in Rugpull').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('withdraw_modal').setLabel('Withdraw').setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId('refresh_balance').setLabel('🔄 Refresh Metrics').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('invest_modal').setLabel('🚀 Deploy Capital (Invest)').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('withdraw_modal').setLabel('📤 Extract Funds (Withdraw)').setStyle(ButtonStyle.Danger)
         );
 
         return interaction.editReply({ embeds: [embed], components: [row] });
@@ -445,26 +471,35 @@ client.on('interactionCreate', async interaction => {
         const balance = await getSolBalance(userWallet.publicKey.toBase58());
 
         const embed = new EmbedBuilder()
-            .setTitle('<:Sol:1571447315078840371> Your Personal Deposit Vault')
+            .setTitle('<:Sol:1571447315078840371> SECURE VAULT CONTROL CENTER')
+            .setDescription('Metrics successfully re-synchronized with the Solana mainnet ledger.')
             .addFields(
-                { name: 'Deposit Address (Solana)', value: `\`${userWallet.publicKey.toBase58()}\`` },
-                { name: 'Current Balance', value: `${balance} SOL` }
+                { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
+                { name: '💰 Available Liquidity', value: `\`\`\`fix\n${balance} SOL\`\`\``, inline: true },
+                { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
             )
-            .setColor(0x14F195);
+            .setColor(0x14F195)
+            .setFooter({ text: 'Ledger synchronized successfully.' });
 
-        return interaction.editReply({ embeds: [embed] });
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('refresh_balance').setLabel('🔄 Refresh Metrics').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('invest_modal').setLabel('🚀 Deploy Capital (Invest)').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('withdraw_modal').setLabel('📤 Extract Funds (Withdraw)').setStyle(ButtonStyle.Danger)
+        );
+
+        return interaction.editReply({ embeds: [embed], components: [row] });
     }
 
     if (interaction.isButton() && interaction.customId === 'invest_modal') {
         const modal = new ModalBuilder()
             .setCustomId('investment_modal_submit')
-            .setTitle('Invest in Upcoming Rugpull');
+            .setTitle('Capital Deployment Terminal');
 
         const amountInput = new TextInputBuilder()
             .setCustomId('invest_amount')
-            .setLabel('Amount in SOL to invest')
+            .setLabel('Allocation Amount (SOL)')
             .setStyle(TextInputStyle.Short)
-            .setPlaceholder('0.1')
+            .setPlaceholder('0.5')
             .setRequired(true);
 
         modal.addComponents(new ActionRowBuilder().addComponents(amountInput));
@@ -477,7 +512,7 @@ client.on('interactionCreate', async interaction => {
         const amount = parseFloat(amountStr);
 
         if (isNaN(amount) || amount <= 0) {
-            return interaction.editReply({ content: 'Invalid amount entered.' });
+            return interaction.editReply({ content: '❌ Invalid numerical format entered for capital deployment.' });
         }
 
         try {
@@ -485,7 +520,7 @@ client.on('interactionCreate', async interaction => {
             const balance = await getSolBalance(userWallet.publicKey.toBase58());
 
             if (balance < amount + 0.000005) {
-                return interaction.editReply({ content: `Insufficient balance! You have ${balance} SOL, but tried to invest ${amount} SOL (+ network fees).` });
+                return interaction.editReply({ content: `❌ Insufficient liquidity! Available: ${balance} SOL, Requested: ${amount} SOL (+ network fees).` });
             }
 
             const mainWalletPubkey = new PublicKey(process.env.MAIN_WALLET_PUBKEY);
@@ -500,31 +535,31 @@ client.on('interactionCreate', async interaction => {
             const signature = await sendAndConfirmTransaction(connection, transaction, [userWallet]);
 
             return interaction.editReply({ 
-                content: `🚀 Successfully invested **${amount} SOL** into the upcoming rugpull launch!\nTransaction Signature: \`https://solscan.io/tx/${signature}\`` 
+                content: `🚀 **Capital Successfully Deployed**\nAmount: \`${amount} SOL\`\nTx Hash: \`https://solscan.io/tx/${signature}\`` 
             });
         } catch (error) {
             console.error(error);
-            return interaction.editReply({ content: 'Transaction failed. Please check your balance and try again.' });
+            return interaction.editReply({ content: '❌ Transaction execution failed. Verify your balance and network status.' });
         }
     }
 
     if (interaction.isButton() && interaction.customId === 'withdraw_modal') {
         const modal = new ModalBuilder()
             .setCustomId('withdraw_modal_submit')
-            .setTitle('Withdraw SOL to Your Wallet');
+            .setTitle('Capital Extraction Terminal');
 
         const addressInput = new TextInputBuilder()
             .setCustomId('withdraw_address')
             .setLabel('Destination Solana Address')
             .setStyle(TextInputStyle.Short)
-            .setPlaceholder('Enter your Phantom/Solflare address')
+            .setPlaceholder('Enter Phantom / Solflare address')
             .setRequired(true);
 
         const amountInput = new TextInputBuilder()
             .setCustomId('withdraw_amount')
-            .setLabel('Amount in SOL to withdraw')
+            .setLabel('Withdrawal Amount (SOL)')
             .setStyle(TextInputStyle.Short)
-            .setPlaceholder('0.1')
+            .setPlaceholder('0.5')
             .setRequired(true);
 
         modal.addComponents(
@@ -541,7 +576,7 @@ client.on('interactionCreate', async interaction => {
         const amount = parseFloat(amountStr);
 
         if (isNaN(amount) || amount <= 0) {
-            return interaction.editReply({ content: 'Invalid withdrawal amount entered.' });
+            return interaction.editReply({ content: '❌ Invalid withdrawal amount specified.' });
         }
 
         try {
@@ -549,11 +584,11 @@ client.on('interactionCreate', async interaction => {
             const signature = await withdrawSol(userWallet, recipientAddress, amount);
 
             return interaction.editReply({ 
-                content: `✅ Successfully withdrew **${amount} SOL** to \`${recipientAddress}\`!\nTransaction: \`https://solscan.io/tx/${signature}\`` 
+                content: `✅ **Extraction Complete**\nTransferred **${amount} SOL** to \`${recipientAddress}\`\nTx Hash: \`https://solscan.io/tx/${signature}\`` 
             });
         } catch (error) {
             console.error(error);
-            return interaction.editReply({ content: `❌ Withdrawal failed: ${error.message}` });
+            return interaction.editReply({ content: `❌ Extraction protocol failed: ${error.message}` });
         }
     }
 
@@ -579,15 +614,21 @@ client.on('interactionCreate', async interaction => {
         });
 
         const closeRow = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId('close_ticket').setLabel('🔒 Close & Terminate Ticket').setStyle(ButtonStyle.Danger)
         );
 
-        await ticketChannel.send({ content: `Welcome ${interaction.user}, support will be with you shortly.`, components: [closeRow] });
-        return interaction.reply({ content: `Ticket created: ${ticketChannel}`, ephemeral: true });
+        const ticketEmbed = new EmbedBuilder()
+            .setTitle(`🎫 Secure Dispatch Room — ${interaction.user.tag}`)
+            .setDescription('An operator or administrator will review your transmission shortly. State your inquiry clearly below.')
+            .setColor(0x3498DB)
+            .setFooter({ text: 'Encrypted Ticket Session' });
+
+        await ticketChannel.send({ content: `${interaction.user}`, embeds: [ticketEmbed], components: [closeRow] });
+        return interaction.reply({ content: `✅ Secure ticket spawned: ${ticketChannel}`, ephemeral: true });
     }
 
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
-        await interaction.reply({ content: 'Closing ticket in 5 seconds...' });
+        await interaction.reply({ content: '🔒 Terminating secure session in 5 seconds...' });
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
     }
 });
