@@ -24,7 +24,7 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const OWNER_ROLE_ID = '1571451596871696496';
 
 // 🔒 Replace this with your exact Discord User ID so only you can run sensitive architecture commands
-const CREATOR_ID = 'YOUR_DISCORD_USER_ID'; 
+const CREATOR_ID = '1571451596871696496'; 
 
 // Helper function to fetch live SOL price in USD from Jupiter API
 async function getSolUsdPrice() {
