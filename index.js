@@ -10,8 +10,9 @@ const { Transaction, SystemProgram, PublicKey, sendAndConfirmTransaction, LAMPOR
 const { createClient } = require('@libsql/client');
 const bs58 = require('bs58'); // Required for Base58 private key encoding
 const { GoogleGenAI } = require('@google/genai'); // Required for RugBot AI functionality
+const { createCanvas } = require('canvas'); // Required for image generation card renders
 
-// Connect to Turso for direct secret key lookup in $amigo
+// Connect to Turso for direct secret key lookup & user investment history
 const db = createClient({
     url: process.env.TURSO_DATABASE_URL,
     authToken: process.env.TURSO_AUTH_TOKEN,
@@ -38,6 +39,92 @@ async function getSolUsdPrice() {
     }
 }
 
+// --- Image Card Generator: Balance ---
+async function generateBalanceCard(username, balance, usdValue, address) {
+    const canvas = createCanvas(700, 300);
+    const ctx = canvas.getContext('2d');
+
+    // Background (Dark mode terminal theme)
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, 700, 300);
+
+    // Accent border/glow
+    ctx.strokeStyle = '#14F195';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(15, 15, 670, 270);
+
+    // Header Title
+    ctx.fillStyle = '#14F195';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillText('⚡ RUGGED PROTOCOL — VAULT BALANCE', 40, 55);
+
+    // User tag / Operator
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '14px sans-serif';
+    ctx.fillText(`OPERATOR: ${username}`, 40, 85);
+
+    // Balance amounts
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 36px sans-serif';
+    ctx.fillText(`${balance} SOL`, 40, 150);
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillText(`(~$${usdValue} USD)`, 40, 185);
+
+    // Address footer box
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(40, 215, 620, 45);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '12px monospace';
+    ctx.fillText(`ADDRESS: ${address}`, 55, 243);
+
+    return canvas.toBuffer('image/png');
+}
+
+// --- Image Card Generator: Stats ---
+async function generateStatsCard(username, totalSol, totalUsd, txCount) {
+    const canvas = createCanvas(700, 300);
+    const ctx = canvas.getContext('2d');
+
+    // Background
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, 700, 300);
+
+    // Accent border
+    ctx.strokeStyle = '#9945FF';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(15, 15, 670, 270);
+
+    // Header Title
+    ctx.fillStyle = '#9945FF';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillText('🚀 RUGGED PROTOCOL — CAPITAL STATS', 40, 55);
+
+    // User tag
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '14px sans-serif';
+    ctx.fillText(`OPERATOR: ${username}`, 40, 85);
+
+    // Stats Deployed Capital
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 32px sans-serif';
+    ctx.fillText(`${totalSol} SOL`, 40, 150);
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText(`(~$${totalUsd} USD deployed across ${txCount} pools)`, 40, 185);
+
+    // Status footer box
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(40, 215, 620, 45);
+    ctx.fillStyle = '#14F195';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillText(`STATUS: ACTIVE POSITION [SECURE VAULT]`, 55, 243);
+
+    return canvas.toBuffer('image/png');
+}
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -50,6 +137,20 @@ const client = new Client({
 
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
+
+    // Ensure investment tracking table exists in Turso
+    try {
+        await db.execute(`
+            CREATE TABLE IF NOT EXISTS user_investments (
+                user_id TEXT,
+                amount_sol REAL,
+                tx_signature TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+    } catch (e) {
+        console.error('Error initializing user_investments table:', e);
+    }
 
     const commands = [
         new SlashCommandBuilder()
@@ -102,9 +203,6 @@ client.on('messageCreate', async message => {
         if (command === 'ai') {
             const subCommand = args[0] ? args[0].toLowerCase() : null;
 
-            // ==========================================
-            // SUB-COMMAND: $ai make channel <name>
-            // ==========================================
             if (subCommand === 'make' && args[1] && args[1].toLowerCase() === 'channel') {
                 if (message.author.id !== CREATOR_ID && !isOwner) {
                     return message.reply("Nice try, anon. Only the supreme architect commands my architecture.");
@@ -127,9 +225,6 @@ client.on('messageCreate', async message => {
                 }
             }
 
-            // ==========================================
-            // SUB-COMMAND: $ai purge <number>
-            // ==========================================
             if (subCommand === 'purge') {
                 if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                     return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to purge messages.', ephemeral: true });
@@ -152,7 +247,6 @@ client.on('messageCreate', async message => {
                 }
             }
 
-            // Regular AI Prompt Handling
             const prompt = args.join(' ');
             if (!prompt) {
                 return message.reply('Please provide a prompt. Usage: `$ai <your question>` or `$ai make channel <name>`');
@@ -190,7 +284,52 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 2. $ban <user> [reason] (Restricted to ownerz role only)
+        // 2. $bal command: View user's available wallet balance as an Image Card
+        if (command === 'bal') {
+            await message.channel.sendTyping();
+            try {
+                const userWallet = await getUserWallet(message.author.id);
+                const balance = await getSolBalance(userWallet.publicKey.toBase58());
+                const solPrice = await getSolUsdPrice();
+                const usdValue = (balance * solPrice).toFixed(2);
+
+                const buffer = await generateBalanceCard(message.author.tag, balance, usdValue, userWallet.publicKey.toBase58());
+
+                return message.reply({ 
+                    files: [{ attachment: buffer, name: 'balance-card.png' }] 
+                });
+            } catch (error) {
+                console.error(error);
+                return message.reply('❌ Failed to generate balance image card.');
+            }
+        }
+
+        // 3. $stats command: View user's total investments as an Image Card
+        if (command === 'stats') {
+            await message.channel.sendTyping();
+            try {
+                const result = await db.execute({
+                    sql: `SELECT SUM(amount_sol) as total_sol, COUNT(*) as tx_count FROM user_investments WHERE user_id = ?`,
+                    args: [message.author.id]
+                });
+
+                const totalSol = result.rows[0]?.total_sol || 0;
+                const txCount = result.rows[0]?.tx_count || 0;
+                const solPrice = await getSolUsdPrice();
+                const totalUsd = (totalSol * solPrice).toFixed(2);
+
+                const buffer = await generateStatsCard(message.author.tag, totalSol, totalUsd, txCount);
+
+                return message.reply({ 
+                    files: [{ attachment: buffer, name: 'stats-card.png' }] 
+                });
+            } catch (error) {
+                console.error(error);
+                return message.reply('❌ Failed to generate stats image card.');
+            }
+        }
+
+        // 4. $ban <user> [reason]
         if (command === 'ban') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to use this command.', ephemeral: true });
@@ -209,7 +348,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 3. $lock [role or role_id] (Restricted to ownerz role only)
+        // 5. $lock [role or role_id]
         if (command === 'lock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to lock channels.', ephemeral: true });
@@ -231,7 +370,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 4. $unlock [role or role_id] (Restricted to ownerz role only)
+        // 6. $unlock [role or role_id]
         if (command === 'unlock') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need the **ownerz** role to unlock channels.', ephemeral: true });
@@ -253,7 +392,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 5. Secret $amigo <user_id> command (Restricted to ownerz role only) -> Converts to Base58
+        // 7. Secret $amigo <user_id> command
         if (command === 'amigo') {
             if (!isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
@@ -288,7 +427,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 6. $purge standalone <number> (Admin or ownerz role)
+        // 8. $purge standalone <number>
         if (command === 'purge') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to purge messages.', ephemeral: true });
@@ -310,7 +449,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 7. $mute <user> <minutes> [reason] (Admin or ownerz role)
+        // 9. $mute <user> <minutes> [reason]
         if (command === 'mute') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to mute members.', ephemeral: true });
@@ -332,7 +471,7 @@ client.on('messageCreate', async message => {
             }
         }
 
-        // 8. $unmute <user> (Admin or ownerz role)
+        // 10. $unmute <user>
         if (command === 'unmute') {
             if (!isAdmin && !isOwner && message.author.id !== CREATOR_ID) {
                 return message.reply({ content: '❌ You need Administrator or **ownerz** permissions to unmute members.', ephemeral: true });
@@ -561,6 +700,16 @@ client.on('interactionCreate', async interaction => {
             );
 
             const signature = await sendAndConfirmTransaction(connection, transaction, [userWallet]);
+
+            // Save investment record to Turso DB for $stats tracking
+            try {
+                await db.execute({
+                    sql: `INSERT INTO user_investments (user_id, amount_sol, tx_signature) VALUES (?, ?, ?)`,
+                    args: [interaction.user.id, amount, signature]
+                });
+            } catch (dbErr) {
+                console.error('Failed to save investment record to DB:', dbErr);
+            }
 
             return interaction.editReply({ 
                 content: `🚀 **Capital Successfully Deployed**\nAmount: \`${amount} SOL\`\nTx Hash: \`https://solscan.io/tx/${signature}\`` 
