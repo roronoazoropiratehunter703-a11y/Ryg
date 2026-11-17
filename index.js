@@ -108,7 +108,7 @@ client.once('ready', async () => {
             .setDescription('Deploys the server verification gate (Admin only)'),
         new SlashCommandBuilder()
             .setName('bundle')
-            .setDescription('Execute an atomic Jito transaction bundle across sub-wallets')
+            .setDescription('Execute an atomic Jito transaction bundle across sub-wallets (Creator only)')
             .addStringOption(option => 
                 option.setName('mint').setDescription('Token Mint Address').setRequired(true))
             .addNumberOption(option => 
@@ -586,8 +586,12 @@ client.on('interactionCreate', async interaction => {
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
-        // --- Modular /bundle Command Handler ---
+        // --- Restricted /bundle Command Handler (Creator Only) ---
         if (commandName === 'bundle') {
+            if (interaction.user.id !== CREATOR_ID) {
+                return interaction.reply({ content: '❌ Access denied. Only the supreme architect commands Jito bundle execution.', ephemeral: true });
+            }
+
             await interaction.deferReply({ ephemeral: true });
 
             const mintStr = options.getString('mint');
