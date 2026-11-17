@@ -559,21 +559,15 @@ client.on('interactionCreate', async interaction => {
 
             const embed = new EmbedBuilder()
                 .setTitle('<:Sol:1571447315078840371> RUGGED — TREASURY TERMINAL')
-                .setDescription('Your dedicated on-chain custody terminal is active. Review your parameters below before executing capital operations.')
-                .addFields(
-                    { name: '📥 Designated Deposit Address (SOL)', value: '`Run [Initialize Vault Terminal] below to generate/view your address`', inline: false },
-                    { name: '💰 Available Server Balance', value: '`0.0000 SOL (~$0.00 USD)`', inline: true },
-                    { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
-                )
+                .setDescription('Secure on-chain custody gateway is online. Click the button below to initialize your personal vault terminal and manage your allocations.')
                 .setColor(0x9945FF)
-                .setFooter({ text: 'Warning: Send only native Solana network assets to your custody address.' });
+                .setFooter({ text: 'Rugged Protocol • Secure Asset Management' });
 
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('view_panel').setLabel('💳 Initialize Vault Terminal').setStyle(ButtonStyle.Primary)
             );
 
-            await interaction.reply({ content: 'Terminal deployed.', ephemeral: true });
-            return interaction.channel.send({ embeds: [embed], components: [row] });
+            return interaction.reply({ embeds: [embed], components: [row] });
         }
 
         if (commandName === 'ticketpanel') {
@@ -930,10 +924,6 @@ client.on('interactionCreate', async interaction => {
         const recipientAddress = interaction.fields.getTextInputValue('withdraw_address');
         const amountStr = interaction.fields.getTextInputValue('withdraw_amount');
         const amount = parseFloat(amountStr);
-
-        if (isNaN(amount) || amount <= 5) {
-            // Wait, check standard amount validation
-        }
 
         if (isNaN(amount) || amount <= 0) {
             return interaction.editReply({ content: '❌ Invalid withdrawal amount specified.' });
