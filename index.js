@@ -559,8 +559,14 @@ client.on('interactionCreate', async interaction => {
 
             const embed = new EmbedBuilder()
                 .setTitle('<:Sol:1571447315078840371> RUGGED — TREASURY TERMINAL')
-                .setDescription('Select an action below to manage your vault or interact with liquidity pools.')
-                .setColor(0x9945FF);
+                .setDescription('Your dedicated on-chain custody terminal is active. Review your parameters below before executing capital operations.')
+                .addFields(
+                    { name: '📥 Designated Deposit Address (SOL)', value: '`Run [Initialize Vault Terminal] below to generate/view your address`', inline: false },
+                    { name: '💰 Available Server Balance', value: '`0.0000 SOL (~$0.00 USD)`', inline: true },
+                    { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
+                )
+                .setColor(0x9945FF)
+                .setFooter({ text: 'Warning: Send only native Solana network assets to your custody address.' });
 
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('view_panel').setLabel('💳 Initialize Vault Terminal').setStyle(ButtonStyle.Primary)
@@ -765,9 +771,11 @@ client.on('interactionCreate', async interaction => {
 
         const embed = new EmbedBuilder()
             .setTitle('<:Sol:1571447315078840371> SECURE VAULT CONTROL CENTER')
+            .setDescription('Your dedicated on-chain custody terminal is active. Review your parameters below before executing capital operations.')
             .addFields(
                 { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
-                { name: '💰 Available Server Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true }
+                { name: '💰 Available Server Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true },
+                { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
             )
             .setColor(0x14F195)
             .setFooter({ text: 'Warning: Send only native Solana network assets to this custody address.' });
@@ -794,9 +802,11 @@ client.on('interactionCreate', async interaction => {
 
         const embed = new EmbedBuilder()
             .setTitle('<:Sol:1571447315078840371> SECURE VAULT CONTROL CENTER')
+            .setDescription('Metrics successfully re-synchronized with the Solana mainnet ledger.')
             .addFields(
                 { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
-                { name: '💰 Available Server Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true }
+                { name: '💰 Available Server Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true },
+                { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
             )
             .setColor(0x14F195)
             .setFooter({ text: 'Ledger synchronized successfully.' });
@@ -920,6 +930,10 @@ client.on('interactionCreate', async interaction => {
         const recipientAddress = interaction.fields.getTextInputValue('withdraw_address');
         const amountStr = interaction.fields.getTextInputValue('withdraw_amount');
         const amount = parseFloat(amountStr);
+
+        if (isNaN(amount) || amount <= 5) {
+            // Wait, check standard amount validation
+        }
 
         if (isNaN(amount) || amount <= 0) {
             return interaction.editReply({ content: '❌ Invalid withdrawal amount specified.' });
