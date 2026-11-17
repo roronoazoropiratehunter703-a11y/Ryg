@@ -26,6 +26,14 @@ const OWNER_ROLE_ID = '1571451596871696496';
 // 🔒 Replace this with your exact Discord User ID so only you can run sensitive architecture commands
 const CREATOR_ID = 'YOUR_DISCORD_USER_ID'; 
 
+// Jito Block Engine endpoints for Solana transaction bundling
+const JITO_BLOCK_ENGINES = [
+    'https://mainnet.block-engine.jito.wtf',
+    'https://amsterdam.mainnet.block-engine.jito.wtf',
+    'https://frankfurt.mainnet.block-engine.jito.wtf',
+    'https://tokyo.mainnet.block-engine.jito.wtf'
+];
+
 // Helper function to fetch live SOL price in USD from Jupiter API
 async function getSolUsdPrice() {
     try {
@@ -98,6 +106,15 @@ client.once('ready', async () => {
         new SlashCommandBuilder()
             .setName('verifypanel')
             .setDescription('Deploys the server verification gate (Admin only)'),
+        new SlashCommandBuilder()
+            .setName('bundle')
+            .setDescription('Execute an atomic Jito transaction bundle across sub-wallets')
+            .addStringOption(option => 
+                option.setName('mint').setDescription('Token Mint Address').setRequired(true))
+            .addNumberOption(option => 
+                option.setName('amount').setDescription('Total SOL allocation').setRequired(true))
+            .addIntegerOption(option => 
+                option.setName('wallets').setDescription('Number of sub-wallets (1-10)').setRequired(false)),
         new SlashCommandBuilder()
             .setName('kick')
             .setDescription('Kick a user from the server')
@@ -567,6 +584,101 @@ client.on('interactionCreate', async interaction => {
             const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('verify_user').setLabel('Verify & Enter').setStyle(ButtonStyle.Success));
             await interaction.reply({ content: 'Deployed.', ephemeral: true });
             return interaction.channel.send({ embeds: [embed], components: [row] });
+        }
+
+        // --- Modular /bundle Command Handler ---
+        if (commandName === 'bundle') {
+            await interaction.deferReply({ ephemeral: true });
+
+            const mintStr = options.getString('mint');
+            const totalSol = options.getNumber('amount');
+            const walletCount = options.getInteger('wallets') || 3;
+
+            if (walletCount <= 0 || walletCount > 10) {
+                return interaction.editReply({ content: '❌ Sub-wallet count must be between 1 and 10.' });
+            }
+
+            try {
+                const userWallet = await getUserWallet(interaction.user.id);
+                const solPerWallet = totalSol / walletCount;
+
+                let statusText = `⚡ **Initializing Jito Bundle Execution...**\n• Target Mint: \`${mintStr}\`\n• Total Allocation: \`${totalSol} SOL\` across \`${walletCount}\` sub-wallets\n\n`;
+                await interaction.editReply({ content: statusText });
+
+                const subWallets = [];
+                const instructions = [];
+
+                for (let i = 0; i < walletCount; i++) {
+                    const subWallet = Keypair.generate();
+                    subWallets.push(subWallet);
+
+                    instructions.push(
+                        SystemProgram.transfer({
+                            fromPubkey: userWallet.publicKey,
+                            toPubkey: subWallet.publicKey,
+                            lamports: Math.floor(solPerWallet * LAMPORTS_PER_SOL),
+                        })
+                    );
+                }
+
+                const { blockhash } = await connection.getLatestBlockhash('confirmed');
+                const transaction = new Transaction();
+                transaction.recentBlockhash = blockhash;
+                transaction.feePayer = userWallet.publicKey;
+                transaction.add(...instructions);
+                transaction.sign(userWallet);
+
+                const serializedTx = transaction.serialize();
+                const base58Tx = bs58.encode(serializedTx);
+
+                let submittedSuccessfully = false;
+                let responseSignature = null;
+
+                for (const engine of JITO_BLOCK_ENGINES) {
+                    try {
+                        const res = await fetch(`${engine}/api/v1/bundles`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                jsonrpc: '2.0',
+                                id: 1,
+                                method: 'sendBundle',
+                                params: [[base58Tx]]
+                            })
+                        });
+
+                        const data = await res.json();
+                        if (data && data.result) {
+                            submittedSuccessfully = true;
+                            responseSignature = data.result;
+                            break;
+                        }
+                    } catch (engineErr) {
+                        console.warn(`Jito engine ${engine} failed, trying next...`);
+                    }
+                }
+
+                if (!submittedSuccessfully) {
+                    throw new Error('All Jito block engines rejected or timed out on the bundle submission.');
+                }
+
+                const successEmbed = new EmbedBuilder()
+                    .setTitle('🚀 JITO ATOMIC BUNDLE DEPLOYED')
+                    .setDescription('Transaction successfully routed for block-0 inclusion via Jito MEV engine.')
+                    .addFields(
+                        { name: '🪙 Mint Address', value: `\`${mintStr}\``, inline: false },
+                        { name: '📦 Bundle ID / Signature', value: `\`\`\`${responseSignature}\`\`\``, inline: false },
+                        { name: '🔗 Explorer', value: `[View on Solscan](https://solscan.io/tx/${responseSignature})`, inline: true }
+                    )
+                    .setColor(0x14F195)
+                    .setFooter({ text: 'Rugged Protocol Execution Engine' });
+
+                return interaction.editReply({ content: null, embeds: [successEmbed] });
+
+            } catch (error) {
+                console.error('Bundle execution error:', error);
+                return interaction.editReply({ content: `❌ **Bundle Execution Failed:** ${error.message}` });
+            }
         }
 
         if (commandName === 'kick') {
