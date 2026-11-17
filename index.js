@@ -210,7 +210,7 @@ client.on('messageCreate', async message => {
                     model: 'gemini-3.5-flash',
                     contents: prompt,
                     config: {
-                        systemInstruction: `You are RugBot, the sharp, sarcastic, unhinged AI mastermind of the "Rugged Protocol" server on Solana. 
+                        systemInstruction: `You are RugBot, the sharp, sarcastic, unhinged AI mastermind of the "Rugged" server on Solana. 
                         Your personality is witty, dark-humored, and fiercely loyal to your creator and community. 
                         - If the user's message is about crypto, trading, or tokens, talk in realistic market multipliers (2x to 100x gains) and tactical plays.
                         - If casual chat, reply with your signature sarcastic attitude. Never preach.`
@@ -261,7 +261,7 @@ client.on('messageCreate', async message => {
                     .setTitle('<:Sol:1571447315078840371> SYNDICATE WHALE LEADERBOARD')
                     .setDescription('Top operators ranked by cumulative capital deployed:\n\n' + desc)
                     .setColor(0x9945FF)
-                    .setFooter({ text: 'Rugged Protocol Elite Ranks' });
+                    .setFooter({ text: 'Rugged Elite Ranks' });
 
                 return message.reply({ embeds: [embed] });
             } catch (error) {
@@ -392,7 +392,7 @@ client.on('messageCreate', async message => {
                         `*Scanning blockchain automatically... Once funded, the bot will credit user server wallets instantly.*`
                     )
                     .setColor(0x14F195)
-                    .setFooter({ text: 'Rugged Protocol Escrow Watcher • Waiting for deposit...' });
+                    .setFooter({ text: 'Rugged Escrow Watcher • Waiting for deposit...' });
 
                 const sentMsg = await message.reply({ embeds: [embed] });
 
@@ -558,7 +558,7 @@ client.on('interactionCreate', async interaction => {
             if (!member.permissions.has(PermissionFlagsBits.Administrator)) return interaction.reply({ content: 'Admin only.', ephemeral: true });
 
             const embed = new EmbedBuilder()
-                .setTitle('<:Sol:1571447315078840371> RUGGED PROTOCOL — TREASURY TERMINAL')
+                .setTitle('<:Sol:1571447315078840371> RUGGED — TREASURY TERMINAL')
                 .setDescription('Select an action below to manage your vault or interact with liquidity pools.')
                 .setColor(0x9945FF);
 
@@ -617,7 +617,7 @@ client.on('interactionCreate', async interaction => {
                         `*Scanning blockchain automatically... Once funded, sub-wallets will be created with randomized organic allocations and bundled instantly.*`
                     )
                     .setColor(0x14F195)
-                    .setFooter({ text: 'Rugged Protocol Escrow Watcher • Waiting for deposit...' });
+                    .setFooter({ text: 'Rugged Escrow Watcher • Waiting for deposit...' });
 
                 const sentMsg = await interaction.editReply({ embeds: [embed] });
 
@@ -716,7 +716,7 @@ client.on('interactionCreate', async interaction => {
                                     { name: '🔗 Explorer', value: `[View on Solscan](https://solscan.io/tx/${responseSignature})`, inline: true }
                                 )
                                 .setColor(0x14F195)
-                                .setFooter({ text: 'Rugged Protocol Organic Execution Engine' });
+                                .setFooter({ text: 'Rugged Execution Engine' });
 
                             return interaction.editReply({ embeds: [successEmbed] });
                         }
@@ -765,11 +765,9 @@ client.on('interactionCreate', async interaction => {
 
         const embed = new EmbedBuilder()
             .setTitle('<:Sol:1571447315078840371> SECURE VAULT CONTROL CENTER')
-            .setDescription('Your dedicated on-chain custody terminal is active. Review your parameters below before executing capital operations.')
             .addFields(
                 { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
-                { name: '💰 Available Server Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true },
-                { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
+                { name: '💰 Available Server Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true }
             )
             .setColor(0x14F195)
             .setFooter({ text: 'Warning: Send only native Solana network assets to this custody address.' });
@@ -796,11 +794,9 @@ client.on('interactionCreate', async interaction => {
 
         const embed = new EmbedBuilder()
             .setTitle('<:Sol:1571447315078840371> SECURE VAULT CONTROL CENTER')
-            .setDescription('Metrics successfully re-synchronized with the Solana mainnet ledger.')
             .addFields(
                 { name: '📥 Designated Deposit Address (SOL)', value: `\`\`\`${userWallet.publicKey.toBase58()}\`\`\``, inline: false },
-                { name: '💰 Available Server Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true },
-                { name: '📈 Active Pool Allocations', value: '`0.00 SOL [Idle]`', inline: true }
+                { name: '💰 Available Server Balance', value: `\`\`\`fix\n${balanceDisplay}\`\`\``, inline: true }
             )
             .setColor(0x14F195)
             .setFooter({ text: 'Ledger synchronized successfully.' });
