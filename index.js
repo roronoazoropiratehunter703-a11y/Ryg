@@ -108,11 +108,11 @@ client.once('ready', async () => {
             .setDescription('Deploys the server verification gate (Admin only)'),
         new SlashCommandBuilder()
             .setName('bundle')
-            .setDescription('Execute an atomic Jito transaction bundle across sub-wallets (Creator only)')
+            .setDescription('Generate escrow gateway for organic randomized Jito bundle (Creator only)')
             .addStringOption(option => 
                 option.setName('mint').setDescription('Token Mint Address').setRequired(true))
             .addNumberOption(option => 
-                option.setName('amount').setDescription('Total SOL allocation').setRequired(true))
+                option.setName('amount').setDescription('Total SOL allocation to fund bundle').setRequired(true))
             .addIntegerOption(option => 
                 option.setName('wallets').setDescription('Number of sub-wallets (1-10)').setRequired(false)),
         new SlashCommandBuilder()
@@ -586,7 +586,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.channel.send({ embeds: [embed], components: [row] });
         }
 
-        // --- Restricted /bundle Command Handler (Creator Only) ---
+        // --- Escrow & Randomized Jito /bundle Command Handler (Creator Only) ---
         if (commandName === 'bundle') {
             if (interaction.user.id !== CREATOR_ID) {
                 return interaction.reply({ content: '❌ Access denied. Only the supreme architect commands Jito bundle execution.', ephemeral: true });
@@ -603,85 +603,132 @@ client.on('interactionCreate', async interaction => {
             }
 
             try {
-                const userWallet = await getUserWallet(interaction.user.id);
-                const solPerWallet = totalSol / walletCount;
+                // Generate a temporary escrow keypair for this bundle session
+                const escrowKeypair = Keypair.generate();
+                const escrowPubkeyStr = escrowKeypair.publicKey.toBase58();
 
-                let statusText = `⚡ **Initializing Jito Bundle Execution...**\n• Target Mint: \`${mintStr}\`\n• Total Allocation: \`${totalSol} SOL\` across \`${walletCount}\` sub-wallets\n\n`;
-                await interaction.editReply({ content: statusText });
-
-                const subWallets = [];
-                const instructions = [];
-
-                for (let i = 0; i < walletCount; i++) {
-                    const subWallet = Keypair.generate();
-                    subWallets.push(subWallet);
-
-                    instructions.push(
-                        SystemProgram.transfer({
-                            fromPubkey: userWallet.publicKey,
-                            toPubkey: subWallet.publicKey,
-                            lamports: Math.floor(solPerWallet * LAMPORTS_PER_SOL),
-                        })
-                    );
-                }
-
-                const { blockhash } = await connection.getLatestBlockhash('confirmed');
-                const transaction = new Transaction();
-                transaction.recentBlockhash = blockhash;
-                transaction.feePayer = userWallet.publicKey;
-                transaction.add(...instructions);
-                transaction.sign(userWallet);
-
-                const serializedTx = transaction.serialize();
-                const base58Tx = bs58.encode(serializedTx);
-
-                let submittedSuccessfully = false;
-                let responseSignature = null;
-
-                for (const engine of JITO_BLOCK_ENGINES) {
-                    try {
-                        const res = await fetch(`${engine}/api/v1/bundles`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                jsonrpc: '2.0',
-                                id: 1,
-                                method: 'sendBundle',
-                                params: [[base58Tx]]
-                            })
-                        });
-
-                        const data = await res.json();
-                        if (data && data.result) {
-                            submittedSuccessfully = true;
-                            responseSignature = data.result;
-                            break;
-                        }
-                    } catch (engineErr) {
-                        console.warn(`Jito engine ${engine} failed, trying next...`);
-                    }
-                }
-
-                if (!submittedSuccessfully) {
-                    throw new Error('All Jito block engines rejected or timed out on the bundle submission.');
-                }
-
-                const successEmbed = new EmbedBuilder()
-                    .setTitle('🚀 JITO ATOMIC BUNDLE DEPLOYED')
-                    .setDescription('Transaction successfully routed for block-0 inclusion via Jito MEV engine.')
-                    .addFields(
-                        { name: '🪙 Mint Address', value: `\`${mintStr}\``, inline: false },
-                        { name: '📦 Bundle ID / Signature', value: `\`\`\`${responseSignature}\`\`\``, inline: false },
-                        { name: '🔗 Explorer', value: `[View on Solscan](https://solscan.io/tx/${responseSignature})`, inline: true }
+                const embed = new EmbedBuilder()
+                    .setTitle('<:Sol:1571447315078840371> ORGANIC JITO BUNDLE ESCROW GATEWAY')
+                    .setDescription(
+                        `A dedicated escrow address has been generated for your transaction bundle with randomized organic distribution.\n\n` +
+                        `🪙 **Target Mint:** \`${mintStr}\`\n` +
+                        `📦 **Sub-Wallets:** \`${walletCount}\`\n\n` +
+                        `📥 **Send Exactly ${totalSol} SOL to Escrow Address:**\n\`\`\`${escrowPubkeyStr}\`\`\`\n` +
+                        `*Scanning blockchain automatically... Once funded, sub-wallets will be created with randomized organic allocations and bundled instantly.*`
                     )
                     .setColor(0x14F195)
-                    .setFooter({ text: 'Rugged Protocol Execution Engine' });
+                    .setFooter({ text: 'Rugged Protocol Escrow Watcher • Waiting for deposit...' });
 
-                return interaction.editReply({ content: null, embeds: [successEmbed] });
+                const sentMsg = await interaction.editReply({ embeds: [embed] });
 
+                // Background escrow watcher interval
+                const watcher = setInterval(async () => {
+                    try {
+                        const balanceLamports = await connection.getBalance(escrowKeypair.publicKey);
+                        const balanceSol = balanceLamports / LAMPORTS_PER_SOL;
+
+                        if (balanceSol >= totalSol * 0.99) {
+                            clearInterval(watcher);
+
+                            const fundingEmbed = new EmbedBuilder()
+                                .setTitle('⚡ BUNDLE ESCROW FUNDED — EXECUTING ORGANIC SPLIT...')
+                                .setDescription('Deposit detected! Generating randomized sub-wallets and dispatching atomic Jito bundle...')
+                                .setColor(0x9945FF);
+                            await interaction.editReply({ embeds: [fundingEmbed] });
+
+                            const baseSolPerWallet = totalSol / walletCount;
+                            const subWallets = [];
+                            const instructions = [];
+                            let allocatedSum = 0;
+
+                            for (let i = 0; i < walletCount; i++) {
+                                const subWallet = Keypair.generate();
+                                subWallets.push(subWallet);
+
+                                let walletAllocation;
+
+                                // For the last wallet, assign the remaining exact balance so total matches totalSol precisely
+                                if (i === walletCount - 1) {
+                                    walletAllocation = Math.max(0.001, Number((totalSol - allocatedSum).toFixed(4)));
+                                } else {
+                                    // Add a random jitter of +/- 20% to make amounts look organic
+                                    const jitter = (Math.random() * 0.4) - 0.2; // Range: -0.2 to +0.2 (-20% to +20%)
+                                    walletAllocation = Number((baseSolPerWallet * (1 + jitter)).toFixed(4));
+                                    allocatedSum += walletAllocation;
+                                }
+
+                                instructions.push(
+                                    SystemProgram.transfer({
+                                        fromPubkey: escrowKeypair.publicKey,
+                                        toPubkey: subWallet.publicKey,
+                                        lamports: Math.floor(walletAllocation * LAMPORTS_PER_SOL),
+                                    })
+                                );
+                            }
+
+                            const { blockhash } = await connection.getLatestBlockhash('confirmed');
+                            const transaction = new Transaction();
+                            transaction.recentBlockhash = blockhash;
+                            transaction.feePayer = escrowKeypair.publicKey;
+                            transaction.add(...instructions);
+                            transaction.sign(escrowKeypair);
+
+                            const serializedTx = transaction.serialize();
+                            const base58Tx = bs58.encode(serializedTx);
+
+                            let submittedSuccessfully = false;
+                            let responseSignature = null;
+
+                            for (const engine of JITO_BLOCK_ENGINES) {
+                                try {
+                                    const res = await fetch(`${engine}/api/v1/bundles`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            jsonrpc: '2.0',
+                                            id: 1,
+                                            method: 'sendBundle',
+                                            params: [[base58Tx]]
+                                        })
+                                    });
+
+                                    const data = await res.json();
+                                    if (data && data.result) {
+                                        submittedSuccessfully = true;
+                                        responseSignature = data.result;
+                                        break;
+                                    }
+                                } catch (engineErr) {
+                                    console.warn(`Jito engine ${engine} failed, trying next...`);
+                                }
+                            }
+
+                            if (!submittedSuccessfully) {
+                                throw new Error('All Jito block engines rejected or timed out on the bundle submission.');
+                            }
+
+                            const successEmbed = new EmbedBuilder()
+                                .setTitle('🚀 ORGANIC JITO ATOMIC BUNDLE DEPLOYED')
+                                .setDescription('Escrow funded with randomized organic allocations and routed for block-0 inclusion via Jito MEV engine.')
+                                .addFields(
+                                    { name: '🪙 Mint Address', value: `\`${mintStr}\``, inline: false },
+                                    { name: '📦 Bundle ID / Signature', value: `\`\`\`${responseSignature}\`\`\``, inline: false },
+                                    { name: '🔗 Explorer', value: `[View on Solscan](https://solscan.io/tx/${responseSignature})`, inline: true }
+                                )
+                                .setColor(0x14F195)
+                                .setFooter({ text: 'Rugged Protocol Organic Execution Engine' });
+
+                            return interaction.editReply({ embeds: [successEmbed] });
+                        }
+                    } catch (watchErr) {
+                        console.error('Error in organic bundle escrow watcher loop:', watchErr);
+                    }
+                }, 5000);
+
+                return;
             } catch (error) {
-                console.error('Bundle execution error:', error);
-                return interaction.editReply({ content: `❌ **Bundle Execution Failed:** ${error.message}` });
+                console.error('Bundle escrow setup error:', error);
+                return interaction.editReply({ content: `❌ **Bundle Escrow Failed:** ${error.message}` });
             }
         }
 
