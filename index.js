@@ -21,7 +21,7 @@ const db = createClient({
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Configured ownerz role ID
-const OWNER_ROLE_ID = '1511233063697256540';
+const OWNER_ROLE_ID = '1571451596871696496';
 
 // 🔒 Replace this with your exact Discord User ID so only you can run sensitive architecture commands
 const CREATOR_ID = '1511233063697256540'; 
